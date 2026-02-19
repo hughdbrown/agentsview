@@ -14,6 +14,18 @@ import (
 	"github.com/wesm/agentsview/internal/sync"
 )
 
+// assertContentType checks that the recorder has the expected Content-Type.
+func assertContentType(
+	t *testing.T, w *httptest.ResponseRecorder, expected string,
+) {
+	t.Helper()
+	if got := w.Header().Get("Content-Type"); got != expected {
+		t.Errorf(
+			"Content-Type = %q, want %q", got, expected,
+		)
+	}
+}
+
 // setupInternal creates a Server for internal testing.
 // It bypasses the public New() wrapper logic to focus on internal components if needed,
 // but uses New() to ensure correct initialization.
@@ -102,10 +114,7 @@ func TestHandlers_Internal_DeadlineExceeded(t *testing.T) {
 				t.Errorf("expected status 504, got %d. Body: %s", w.Code, w.Body.String())
 			}
 
-			// Verify Content-Type is JSON (except for empty responses, but errors should be JSON)
-			if contentType := w.Header().Get("Content-Type"); contentType != "application/json" {
-				t.Errorf("expected Content-Type application/json, got %s", contentType)
-			}
+			assertContentType(t, w, "application/json")
 		})
 	}
 }

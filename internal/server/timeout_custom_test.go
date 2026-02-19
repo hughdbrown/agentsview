@@ -41,10 +41,7 @@ func TestWithTimeout_Timeout(t *testing.T) {
 		t.Errorf("expected 503 Service Unavailable, got %d", resp.StatusCode)
 	}
 
-	contentType := resp.Header.Get("Content-Type")
-	if contentType != "application/json" {
-		t.Errorf("expected Content-Type: application/json, got %q", contentType)
-	}
+	assertContentType(t, w, "application/json")
 
 	body, _ := io.ReadAll(resp.Body)
 	var errResp jsonError
