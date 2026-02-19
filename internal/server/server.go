@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"log"
@@ -18,11 +19,12 @@ import (
 
 // Server is the HTTP server that serves the SPA and REST API.
 type Server struct {
-	mu     gosync.RWMutex
-	cfg    config.Config
-	db     *db.DB
-	engine *sync.Engine
-	mux    *http.ServeMux
+	mu      gosync.RWMutex
+	cfg     config.Config
+	db      *db.DB
+	engine  *sync.Engine
+	mux     *http.ServeMux
+	httpSrv *http.Server
 
 	spaFS      fs.FS
 	spaHandler http.Handler
@@ -148,8 +150,22 @@ func (s *Server) ListenAndServe() error {
 		ReadTimeout: 10 * time.Second,
 		IdleTimeout: 120 * time.Second,
 	}
+	s.mu.Lock()
+	s.httpSrv = srv
+	s.mu.Unlock()
 	log.Printf("Starting server at http://%s", addr)
 	return srv.ListenAndServe()
+}
+
+// Shutdown gracefully shuts down the HTTP server.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.RLock()
+	srv := s.httpSrv
+	s.mu.RUnlock()
+	if srv == nil {
+		return nil
+	}
+	return srv.Shutdown(ctx)
 }
 
 // FindAvailablePort finds an available port starting from the given port.

@@ -133,22 +133,49 @@ func (te *testEnv) listenAndServe(t *testing.T) string {
 	// Wait for the port to accept connections.
 	deadline := time.Now().Add(2 * time.Second)
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	ready := false
+	var lastDialErr error
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		conn, err := net.DialTimeout(
+			"tcp", addr, 50*time.Millisecond,
+		)
 		if err == nil {
 			conn.Close()
+			ready = true
 			break
 		}
+		lastDialErr = err
 		time.Sleep(10 * time.Millisecond)
+	}
+	if !ready {
+		select {
+		case err := <-serverErr:
+			t.Fatalf(
+				"server failed to start: %v", err,
+			)
+		default:
+		}
+		t.Fatalf(
+			"server not ready after 2s: last dial error: %v",
+			lastDialErr,
+		)
 	}
 
 	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+		if err := te.srv.Shutdown(ctx); err != nil {
+			t.Errorf("server shutdown error: %v", err)
+		}
 		select {
 		case err := <-serverErr:
 			if err != nil && err != http.ErrServerClosed {
 				t.Errorf("server exited with error: %v", err)
 			}
-		default:
+		case <-time.After(5 * time.Second):
+			t.Error("timed out waiting for server goroutine")
 		}
 	})
 
