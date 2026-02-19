@@ -1,7 +1,6 @@
 package server_test
 
 import (
-	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,14 +24,7 @@ func TestUploadSession_SaveFailure(t *testing.T) {
 
 	w := te.upload(t, "test.jsonl", "{}", "project=failproj")
 	assertStatus(t, w, http.StatusInternalServerError)
-
-	var resp map[string]string
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decoding error response: %v", err)
-	}
-	if got, want := resp["error"], "failed to save upload"; got != want {
-		t.Errorf("expected error %q, got %q", want, got)
-	}
+	assertErrorResponse(t, w, "failed to save upload")
 }
 
 func TestUploadSession_DBFailure(t *testing.T) {
@@ -44,12 +36,5 @@ func TestUploadSession_DBFailure(t *testing.T) {
 	content := `{"type":"user","timestamp":"2024-01-01T10:00:00Z","message":{"content":"Hello"}}`
 	w := te.upload(t, "test.jsonl", content, "project=myproj")
 	assertStatus(t, w, http.StatusInternalServerError)
-
-	var resp map[string]string
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decoding error response: %v", err)
-	}
-	if got, want := resp["error"], "failed to save session to database"; got != want {
-		t.Errorf("expected error %q, got %q", want, got)
-	}
+	assertErrorResponse(t, w, "failed to save session to database")
 }

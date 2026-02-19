@@ -99,6 +99,17 @@ func (te *testEnv) writeProjectFile(t *testing.T, project, filename, content str
 	return path
 }
 
+// writeSessionFile builds JSONL from the given log entries and
+// writes it as a project file. Returns the file path.
+func (te *testEnv) writeSessionFile(
+	t *testing.T, project, filename string,
+	entries ...LogEntry,
+) string {
+	t.Helper()
+	content := buildJSONL(t, entries...)
+	return te.writeProjectFile(t, project, filename, content)
+}
+
 func (te *testEnv) seedSession(
 	t *testing.T, id, project string, msgCount int,
 	opts ...func(*db.Session),
@@ -234,6 +245,24 @@ func assertBodyContains(
 	if !strings.Contains(w.Body.String(), substr) {
 		t.Errorf("body %q does not contain %q",
 			w.Body.String(), substr)
+	}
+}
+
+// assertErrorResponse checks that the response body is a JSON
+// object with an "error" field matching wantMsg.
+func assertErrorResponse(
+	t *testing.T, w *httptest.ResponseRecorder,
+	wantMsg string,
+) {
+	t.Helper()
+	var resp map[string]string
+	if err := json.Unmarshal(
+		w.Body.Bytes(), &resp,
+	); err != nil {
+		t.Fatalf("decoding error response: %v", err)
+	}
+	if got := resp["error"]; got != wantMsg {
+		t.Errorf("error = %q, want %q", got, wantMsg)
 	}
 }
 
@@ -816,14 +845,7 @@ func TestSearch_NotAvailable(t *testing.T) {
 
 	w := te.get(t, "/api/v1/search?q=foo")
 	assertStatus(t, w, http.StatusNotImplemented)
-
-	var errResp map[string]string
-	if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
-		t.Fatalf("decoding error response: %v", err)
-	}
-	if got := errResp["error"]; got != "search not available" {
-		t.Errorf("error message = %q, want %q", got, "search not available")
-	}
+	assertErrorResponse(t, w, "search not available")
 }
 
 func TestGetStats(t *testing.T) {
@@ -1096,10 +1118,9 @@ func TestTriggerSync_NonStreaming(t *testing.T) {
 	te := setup(t)
 
 	// Seed a session file so we expect at least one session in the sync result.
-	content := buildJSONL(t,
+	te.writeSessionFile(t, "test-proj", "sync-test.jsonl",
 		LogEntry{Type: "user", Timestamp: tsZero, Message: map[string]string{"content": "msg"}},
 	)
-	te.writeProjectFile(t, "test-proj", "sync-test.jsonl", content)
 
 	rec := httptest.NewRecorder()
 	nf := &noFlushWriter{rec}
@@ -1141,10 +1162,9 @@ func (f *flushRecorder) BodyString() string {
 func TestTriggerSync_SSE(t *testing.T) {
 	te := setup(t)
 
-	content := buildJSONL(t,
+	te.writeSessionFile(t, "test-proj", "sse-test.jsonl",
 		LogEntry{Type: "user", Timestamp: tsZero, Message: map[string]string{"content": "msg"}},
 	)
-	te.writeProjectFile(t, "test-proj", "sse-test.jsonl", content)
 
 	req := httptest.NewRequest("POST", "/api/v1/sync", nil)
 	w := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
@@ -1273,10 +1293,9 @@ func TestTriggerSync_SSEEvents(t *testing.T) {
 	te := setup(t)
 
 	for _, name := range []string{"a", "b"} {
-		content := buildJSONL(t,
+		te.writeSessionFile(t, "sse-proj", name+".jsonl",
 			LogEntry{Type: "user", Timestamp: tsZero, Message: map[string]string{"content": fmt.Sprintf("msg %s", name)}},
 		)
-		te.writeProjectFile(t, "sse-proj", name+".jsonl", content)
 	}
 
 	req := httptest.NewRequest("POST", "/api/v1/sync", nil)
