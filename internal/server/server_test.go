@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -45,7 +46,14 @@ type testEnv struct {
 	dataDir   string
 }
 
-func setup(t *testing.T) *testEnv {
+// setupOption customizes the config used by setup.
+type setupOption func(*config.Config)
+
+func withWriteTimeout(d time.Duration) setupOption {
+	return func(c *config.Config) { c.WriteTimeout = d }
+}
+
+func setup(t *testing.T, opts ...setupOption) *testEnv {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
@@ -71,6 +79,9 @@ func setup(t *testing.T) *testEnv {
 		DataDir:      dir,
 		DBPath:       dbPath,
 		WriteTimeout: 30 * time.Second,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 	engine := sync.NewEngine(
 		database, claudeDir, codexDir, "test",
@@ -108,6 +119,43 @@ func (te *testEnv) writeSessionFile(
 	t.Helper()
 	content := buildJSONL(t, entries...)
 	return te.writeProjectFile(t, project, filename, content)
+}
+
+// listenAndServe starts the server on a real port and returns the
+// base URL. The server is shut down when the test finishes.
+func (te *testEnv) listenAndServe(t *testing.T) string {
+	t.Helper()
+	port := server.FindAvailablePort(40000)
+	te.srv.SetPort(port)
+
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- te.srv.ListenAndServe()
+	}()
+
+	// Wait for the port to accept connections.
+	deadline := time.Now().Add(2 * time.Second)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Cleanup(func() {
+		select {
+		case err := <-serverErr:
+			if err != nil && err != http.ErrServerClosed {
+				t.Errorf("server exited with error: %v", err)
+			}
+		default:
+		}
+	})
+
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
 }
 
 func (te *testEnv) seedSession(

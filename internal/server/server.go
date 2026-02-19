@@ -113,6 +113,13 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	s.spaHandler.ServeHTTP(w, r)
 }
 
+// SetPort updates the listen port (for testing).
+func (s *Server) SetPort(port int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.Port = port
+}
+
 // SetGithubToken updates the GitHub token for testing.
 func (s *Server) SetGithubToken(token string) {
 	s.mu.Lock()
