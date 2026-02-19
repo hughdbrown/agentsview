@@ -359,10 +359,17 @@ func (db *DB) GetMessageByOrdinal(
 }
 
 // resolveToolCalls builds ToolCall rows from messages using
-// the parallel IDs slice from insertMessagesTx.
+// the parallel IDs slice from insertMessagesTx. Panics if
+// len(ids) != len(msgs) since that indicates a caller bug.
 func resolveToolCalls(
 	msgs []Message, ids []int64,
 ) []ToolCall {
+	if len(ids) != len(msgs) {
+		panic(fmt.Sprintf(
+			"resolveToolCalls: len(ids)=%d != len(msgs)=%d",
+			len(ids), len(msgs),
+		))
+	}
 	var calls []ToolCall
 	for i, m := range msgs {
 		for _, tc := range m.ToolCalls {

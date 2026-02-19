@@ -205,4 +205,25 @@ describe("SessionsStore.loadProjects dedup", () => {
 
     expect(api.getProjects).toHaveBeenCalledTimes(1);
   });
+
+  it("should let concurrent callers await the same result", async () => {
+    const p1 = sessions.loadProjects();
+    const p2 = sessions.loadProjects();
+    await Promise.all([p1, p2]);
+
+    expect(sessions.projects).toHaveLength(1);
+    expect(sessions.projects[0]!.name).toBe("proj");
+  });
+
+  it("should propagate rejection to all concurrent callers", async () => {
+    vi.mocked(api.getProjects).mockRejectedValueOnce(
+      new Error("network"),
+    );
+
+    const p1 = sessions.loadProjects();
+    const p2 = sessions.loadProjects();
+
+    await expect(p1).rejects.toThrow("network");
+    await expect(p2).rejects.toThrow("network");
+  });
 });

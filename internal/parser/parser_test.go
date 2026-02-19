@@ -1178,6 +1178,30 @@ func TestParseGeminiSession(t *testing.T) {
 			},
 		},
 		{
+			name: "empty tool name skipped",
+			content: testjsonl.GeminiSessionJSON(
+				"sess-uuid-empty-tc", hash, tsEarly, tsEarlyS5,
+				[]map[string]any{
+					testjsonl.GeminiUserMsg("u1", tsEarly, "do it"),
+					testjsonl.GeminiAssistantMsg(
+						"a1", tsEarlyS5, "Using tool.", &testjsonl.GeminiMsgOpts{
+							ToolCalls: []testjsonl.GeminiToolCall{
+								{Name: "", DisplayName: "", Args: nil},
+							},
+						},
+					),
+				},
+			),
+			wantMsgCount: 2,
+			check: func(t *testing.T, _ *ParsedSession, msgs []ParsedMessage) {
+				t.Helper()
+				if !msgs[1].HasToolUse {
+					t.Error("msg[1] should have tool_use")
+				}
+				assertToolCalls(t, msgs[1].ToolCalls, nil)
+			},
+		},
+		{
 			name: "only system messages",
 			content: testjsonl.GeminiSessionJSON(
 				"sess-uuid-3", hash, tsEarly, tsEarlyS5,
