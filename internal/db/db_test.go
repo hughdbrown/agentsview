@@ -89,6 +89,52 @@ func asstMsg(sid string, ordinal int, content string) Message {
 	}
 }
 
+// userMsgAt creates a user message with the given content and
+// timestamp.
+func userMsgAt(
+	sid string, ordinal int, content, ts string,
+) Message {
+	m := userMsg(sid, ordinal, content)
+	m.Timestamp = ts
+	return m
+}
+
+// asstMsgAt creates an assistant message with the given content
+// and timestamp.
+func asstMsgAt(
+	sid string, ordinal int, content, ts string,
+) Message {
+	m := asstMsg(sid, ordinal, content)
+	m.Timestamp = ts
+	return m
+}
+
+// canceledCtx returns an already-canceled context.
+func canceledCtx() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+// requireCanceledErr asserts that err is context.Canceled.
+func requireCanceledErr(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error from canceled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+// requireFTS skips the test if FTS is not available.
+func requireFTS(t *testing.T, d *DB) {
+	t.Helper()
+	if !d.HasFTS() {
+		t.Skip("no FTS support")
+	}
+}
+
 // requireSessionExists asserts that a session exists and returns it.
 func requireSessionExists(t *testing.T, d *DB, id string) *Session {
 	t.Helper()
@@ -241,12 +287,9 @@ func TestMessageCRUD(t *testing.T) {
 	})
 
 	m1 := userMsg("s1", 0, "Hello")
-	m2 := asstMsg("s1", 1, "Hi there")
-	m2.Timestamp = "2024-01-01T00:00:01Z"
-	m3 := userMsg("s1", 2, "Thanks")
-	m3.Timestamp = "2024-01-01T00:00:02Z"
-	m4 := userMsg("s1", 3, "Empty TS")
-	m4.Timestamp = ""
+	m2 := asstMsgAt("s1", 1, "Hi there", "2024-01-01T00:00:01Z")
+	m3 := userMsgAt("s1", 2, "Thanks", "2024-01-01T00:00:02Z")
+	m4 := userMsgAt("s1", 3, "Empty TS", "")
 
 	insertMessages(t, d, m1, m2, m3, m4)
 
@@ -342,17 +385,15 @@ func TestReplaceSessionMessages(t *testing.T) {
 
 func TestSearch(t *testing.T) {
 	d := testDB(t)
-	if !d.HasFTS() {
-		t.Skip("skipping search test: no FTS support")
-	}
+	requireFTS(t, d)
 
 	insertSession(t, d, "s1", "p", func(s *Session) {
 		s.MessageCount = 2
 	})
 
 	m1 := userMsg("s1", 0, "Fix the authentication bug")
-	m2 := asstMsg("s1", 1, "Looking at the auth module")
-	m2.Timestamp = "2024-01-01T00:00:01Z"
+	m2 := asstMsgAt("s1", 1, "Looking at the auth module",
+		"2024-01-01T00:00:01Z")
 
 	insertMessages(t, d, m1, m2)
 
@@ -371,87 +412,48 @@ func TestSearch(t *testing.T) {
 	}
 }
 
-func TestSearchCanceledContext(t *testing.T) {
+func TestCanceledContext(t *testing.T) {
 	d := testDB(t)
-	if !d.HasFTS() {
-		t.Skip("skipping search test: no FTS support")
-	}
 
 	insertSession(t, d, "s1", "p", func(s *Session) {
 		s.MessageCount = 1
 	})
 	insertMessages(t, d, userMsg("s1", 0, "searchable content"))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	ctx := canceledCtx()
 
-	_, err := d.Search(ctx, SearchFilter{
-		Query: "searchable",
-		Limit: 10,
-	})
-	if err == nil {
-		t.Fatal("expected error from canceled context")
+	tests := []struct {
+		name string
+		fn   func() error
+		skip bool
+	}{
+		{"Search", func() error {
+			_, err := d.Search(ctx, SearchFilter{
+				Query: "searchable", Limit: 10,
+			})
+			return err
+		}, !d.HasFTS()},
+		{"ListSessions", func() error {
+			_, err := d.ListSessions(ctx, SessionFilter{Limit: 10})
+			return err
+		}, false},
+		{"GetMessages", func() error {
+			_, err := d.GetMessages(ctx, "s1", 0, 10, true)
+			return err
+		}, false},
+		{"GetStats", func() error {
+			_, err := d.GetStats(ctx)
+			return err
+		}, false},
 	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled, got: %v", err)
-	}
-}
 
-func TestListSessionsCanceledContext(t *testing.T) {
-	d := testDB(t)
-
-	insertSession(t, d, "s1", "p", func(s *Session) {
-		s.MessageCount = 1
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := d.ListSessions(ctx, SessionFilter{Limit: 10})
-	if err == nil {
-		t.Fatal("expected error from canceled context")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled, got: %v", err)
-	}
-}
-
-func TestGetMessagesCanceledContext(t *testing.T) {
-	d := testDB(t)
-
-	insertSession(t, d, "s1", "p", func(s *Session) {
-		s.MessageCount = 1
-	})
-	insertMessages(t, d, userMsg("s1", 0, "msg"))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := d.GetMessages(ctx, "s1", 0, 10, true)
-	if err == nil {
-		t.Fatal("expected error from canceled context")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled, got: %v", err)
-	}
-}
-
-func TestGetStatsCanceledContext(t *testing.T) {
-	d := testDB(t)
-
-	// Ensure there's some data so the query actually has work to do
-	// (though with immediate cancel it shouldn't matter).
-	insertSession(t, d, "s1", "p")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := d.GetStats(ctx)
-	if err == nil {
-		t.Fatal("expected error from canceled context")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled, got: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.skip {
+				t.Skip("no FTS support")
+			}
+			requireCanceledErr(t, tt.fn())
+		})
 	}
 }
 
@@ -1330,12 +1332,8 @@ func TestMigrationRace(t *testing.T) {
 }
 
 func TestFTSBackfill(t *testing.T) {
-	// Check for FTS support first
 	dCheck := testDB(t)
-	if !dCheck.HasFTS() {
-		dCheck.Close()
-		t.Skip("skipping FTS backfill test: no FTS support")
-	}
+	requireFTS(t, dCheck)
 	dCheck.Close()
 
 	dir := t.TempDir()

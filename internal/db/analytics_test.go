@@ -599,8 +599,7 @@ func TestAnalyticsTimezone(t *testing.T) {
 
 func TestAnalyticsCanceledContext(t *testing.T) {
 	d := testDB(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	ctx := canceledCtx()
 
 	f := baseFilter()
 
@@ -628,10 +627,7 @@ func TestAnalyticsCanceledContext(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.fn()
-			if err == nil {
-				t.Fatal("expected error from canceled context")
-			}
+			requireCanceledErr(t, tt.fn())
 		})
 	}
 }
