@@ -115,9 +115,7 @@
       if (route === "sessions") {
         sessions.initFromParams(params);
         sessions.load();
-        if (sessions.projects.length === 0) {
-          sessions.loadProjects();
-        }
+        sessions.loadProjects();
       }
     });
   });

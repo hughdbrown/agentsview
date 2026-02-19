@@ -13,10 +13,19 @@ vi.mock("../api/client.js", () => ({
   getProjects: vi.fn(),
 }));
 
-function mockListSessions() {
+function mockListSessions(
+  overrides?: Partial<{ next_cursor: string }>,
+) {
   vi.mocked(api.listSessions).mockResolvedValue({
     sessions: [],
     total: 0,
+    ...overrides,
+  });
+}
+
+function mockGetProjects() {
+  vi.mocked(api.getProjects).mockResolvedValue({
+    projects: [{ name: "proj", session_count: 1 }],
   });
 }
 
@@ -27,6 +36,10 @@ function resetStore() {
   sessions.dateToFilter = "";
   sessions.minMessagesFilter = 0;
   sessions.maxMessagesFilter = 0;
+  // Reset private state for loadProjects dedup.
+  // Access via any to bypass TS visibility.
+  (sessions as any).projectsLoaded = false;
+  (sessions as any).projectsLoading = false;
 }
 
 describe("SessionsStore.initFromParams", () => {
@@ -130,5 +143,66 @@ describe("SessionsStore.load serialization", () => {
 
     const call = vi.mocked(api.listSessions).mock.lastCall;
     expect(call![0].project).toBeUndefined();
+  });
+});
+
+describe("SessionsStore.loadMore serialization", () => {
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+  });
+
+  it("should pass filters through loadMore", async () => {
+    mockListSessions({ next_cursor: "cur1" });
+    sessions.minMessagesFilter = 10;
+    sessions.maxMessagesFilter = 50;
+    await sessions.load();
+
+    vi.clearAllMocks();
+    mockListSessions();
+    await sessions.loadMore();
+
+    const call = vi.mocked(api.listSessions).mock.lastCall;
+    expect(call).toBeDefined();
+    expect(call![0].min_messages).toBe(10);
+    expect(call![0].max_messages).toBe(50);
+    expect(call![0].cursor).toBe("cur1");
+  });
+
+  it("should omit min/max when 0 in loadMore", async () => {
+    mockListSessions({ next_cursor: "cur2" });
+    await sessions.load();
+
+    vi.clearAllMocks();
+    mockListSessions();
+    await sessions.loadMore();
+
+    const call = vi.mocked(api.listSessions).mock.lastCall;
+    expect(call![0].min_messages).toBeUndefined();
+    expect(call![0].max_messages).toBeUndefined();
+  });
+});
+
+describe("SessionsStore.loadProjects dedup", () => {
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+    mockGetProjects();
+  });
+
+  it("should only call API once across multiple loadProjects", async () => {
+    await sessions.loadProjects();
+    await sessions.loadProjects();
+    await sessions.loadProjects();
+
+    expect(api.getProjects).toHaveBeenCalledTimes(1);
+  });
+
+  it("should not fire concurrent requests", async () => {
+    const p1 = sessions.loadProjects();
+    const p2 = sessions.loadProjects();
+    await Promise.all([p1, p2]);
+
+    expect(api.getProjects).toHaveBeenCalledTimes(1);
   });
 });

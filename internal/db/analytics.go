@@ -1311,18 +1311,20 @@ func (db *DB) GetAnalyticsVelocity(
 		}
 
 		// First response: first user → first assistant after it
+		// Scan by ordinal (conversation order), not timestamp.
 		var firstUser, firstAsst *velocityMsg
+		firstUserIdx := -1
 		for i := range msgs {
 			if msgs[i].role == "user" && msgs[i].valid {
 				firstUser = &msgs[i]
+				firstUserIdx = i
 				break
 			}
 		}
-		if firstUser != nil {
-			for i := range msgs {
+		if firstUserIdx >= 0 {
+			for i := firstUserIdx + 1; i < len(msgs); i++ {
 				if msgs[i].role == "assistant" &&
-					msgs[i].valid &&
-					msgs[i].ts.After(firstUser.ts) {
+					msgs[i].valid {
 					firstAsst = &msgs[i]
 					break
 				}

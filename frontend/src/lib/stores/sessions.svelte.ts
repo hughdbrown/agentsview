@@ -16,6 +16,8 @@ class SessionsStore {
   maxMessagesFilter: number = $state(0);
 
   private loadVersion: number = 0;
+  private projectsLoaded: boolean = false;
+  private projectsLoading: boolean = false;
 
   get activeSession(): Session | undefined {
     return this.sessions.find(
@@ -102,8 +104,15 @@ class SessionsStore {
   }
 
   async loadProjects() {
-    const res = await api.getProjects();
-    this.projects = res.projects;
+    if (this.projectsLoaded || this.projectsLoading) return;
+    this.projectsLoading = true;
+    try {
+      const res = await api.getProjects();
+      this.projects = res.projects;
+      this.projectsLoaded = true;
+    } finally {
+      this.projectsLoading = false;
+    }
   }
 
   selectSession(id: string) {

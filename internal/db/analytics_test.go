@@ -1188,6 +1188,51 @@ func TestGetAnalyticsVelocity(t *testing.T) {
 			)
 		}
 	})
+
+	t.Run("OrdinalVsTimestampSkew", func(t *testing.T) {
+		d2 := testDB(t)
+		insertSession(t, d2, "v5", "proj", func(s *Session) {
+			s.StartedAt = Ptr("2024-06-01T09:00:00Z")
+			s.MessageCount = 3
+			s.Agent = "claude"
+		})
+		// Ordinal 1 is user, ordinal 2 is assistant, but
+		// assistant has an earlier timestamp than the user
+		// (clock skew). First-response should still pair
+		// ordinal 1 → ordinal 2 since we scan by ordinal.
+		insertMessages(t, d2,
+			Message{
+				SessionID: "v5", Ordinal: 0, Role: "user",
+				Content: "setup", ContentLength: 5,
+				Timestamp: "2024-06-01T09:00:00Z",
+			},
+			Message{
+				SessionID: "v5", Ordinal: 1, Role: "user",
+				Content: "real question", ContentLength: 13,
+				Timestamp: "2024-06-01T09:00:30Z",
+			},
+			Message{
+				SessionID: "v5", Ordinal: 2,
+				Role:    "assistant",
+				Content: "answer", ContentLength: 6,
+				Timestamp: "2024-06-01T09:00:20Z",
+			},
+		)
+		resp, err := d2.GetAnalyticsVelocity(ctx, baseFilter())
+		if err != nil {
+			t.Fatalf("GetAnalyticsVelocity: %v", err)
+		}
+		// First user is ordinal 0. First assistant after it
+		// (by ordinal) is ordinal 2. Delta = |20s - 0s| = 20s.
+		// Even though ordinal 2 has an earlier timestamp than
+		// ordinal 1, we pair by ordinal order.
+		if resp.Overall.FirstResponseSec.P50 != 20.0 {
+			t.Errorf(
+				"FirstResponse P50 = %f, want 20.0",
+				resp.Overall.FirstResponseSec.P50,
+			)
+		}
+	})
 }
 
 func TestVelocityChunkedQuery(t *testing.T) {
