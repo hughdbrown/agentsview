@@ -52,8 +52,12 @@
     const cells = analytics.hourOfWeek?.cells;
     if (!cells || cells.length === 0) return null;
 
+    // Index cells by (day_of_week, hour) to avoid assuming
+    // array order.
+    const lookup = new Map<string, number>();
     let max = 0;
     for (const c of cells) {
+      lookup.set(`${c.day_of_week}:${c.hour}`, c.messages);
       if (c.messages > max) max = c.messages;
     }
 
@@ -61,8 +65,7 @@
     for (let d = 0; d < 7; d++) {
       const hours: { hour: number; value: number; level: number }[] = [];
       for (let h = 0; h < 24; h++) {
-        const cell = cells[d * 24 + h];
-        const value = cell?.messages ?? 0;
+        const value = lookup.get(`${d}:${h}`) ?? 0;
         hours.push({
           hour: h,
           value,

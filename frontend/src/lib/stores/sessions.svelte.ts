@@ -52,8 +52,12 @@ class SessionsStore {
         date: this.dateFilter || undefined,
         date_from: this.dateFromFilter || undefined,
         date_to: this.dateToFilter || undefined,
-        min_messages: this.minMessagesFilter || undefined,
-        max_messages: this.maxMessagesFilter || undefined,
+        min_messages: this.minMessagesFilter > 0
+          ? this.minMessagesFilter
+          : undefined,
+        max_messages: this.maxMessagesFilter > 0
+          ? this.maxMessagesFilter
+          : undefined,
         limit: 200,
       });
       if (this.loadVersion !== version) return;
@@ -77,8 +81,12 @@ class SessionsStore {
         date: this.dateFilter || undefined,
         date_from: this.dateFromFilter || undefined,
         date_to: this.dateToFilter || undefined,
-        min_messages: this.minMessagesFilter || undefined,
-        max_messages: this.maxMessagesFilter || undefined,
+        min_messages: this.minMessagesFilter > 0
+          ? this.minMessagesFilter
+          : undefined,
+        max_messages: this.maxMessagesFilter > 0
+          ? this.maxMessagesFilter
+          : undefined,
         cursor: this.nextCursor,
         limit: 200,
       });

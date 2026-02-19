@@ -9,6 +9,40 @@ import (
 	"time"
 )
 
+// maxSQLVars is the maximum bind variables per IN clause to stay
+// within SQLite's default SQLITE_MAX_VARIABLE_NUMBER (999).
+const maxSQLVars = 500
+
+// inPlaceholders returns a "(?,?,...)" string and []any args for
+// a slice of string IDs.
+func inPlaceholders(ids []string) (string, []any) {
+	ph := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		ph[i] = "?"
+		args[i] = id
+	}
+	return "(" + strings.Join(ph, ",") + ")", args
+}
+
+// queryChunked executes a callback for each chunk of IDs,
+// splitting at maxSQLVars to avoid SQLite bind-variable limits.
+func queryChunked(
+	ids []string,
+	fn func(chunk []string) error,
+) error {
+	for i := 0; i < len(ids); i += maxSQLVars {
+		end := i + maxSQLVars
+		if end > len(ids) {
+			end = len(ids)
+		}
+		if err := fn(ids[i:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // AnalyticsFilter is the shared filter for all analytics queries.
 type AnalyticsFilter struct {
 	From     string // ISO date YYYY-MM-DD, inclusive
@@ -965,49 +999,14 @@ func (db *DB) GetAnalyticsSessionShape(
 	// Query autonomy data for filtered sessions
 	autonomyCounts := make(map[string]int)
 	if len(sessionIDs) > 0 {
-		placeholders := make([]string, len(sessionIDs))
-		autoArgs := make([]any, len(sessionIDs))
-		for i, id := range sessionIDs {
-			placeholders[i] = "?"
-			autoArgs[i] = id
-		}
-		autoQuery := `SELECT session_id,
-			SUM(CASE WHEN role='user' THEN 1 ELSE 0 END),
-			SUM(CASE WHEN role='assistant'
-				AND has_tool_use=1 THEN 1 ELSE 0 END)
-			FROM messages
-			WHERE session_id IN (` +
-			strings.Join(placeholders, ",") + `)
-			GROUP BY session_id`
-
-		autoRows, err := db.reader.QueryContext(
-			ctx, autoQuery, autoArgs...,
-		)
-		if err != nil {
-			return SessionShapeResponse{},
-				fmt.Errorf("querying autonomy: %w", err)
-		}
-		defer autoRows.Close()
-
-		for autoRows.Next() {
-			var sid string
-			var userCount, toolCount int
-			if err := autoRows.Scan(
-				&sid, &userCount, &toolCount,
-			); err != nil {
-				return SessionShapeResponse{},
-					fmt.Errorf("scanning autonomy row: %w", err)
-			}
-			if userCount > 0 {
-				ratio := float64(toolCount) / float64(userCount)
-				autonomyCounts[autonomyBucket(ratio)]++
-			}
-		}
-		if err := autoRows.Err(); err != nil {
-			return SessionShapeResponse{},
-				fmt.Errorf(
-					"iterating autonomy rows: %w", err,
+		err := queryChunked(sessionIDs,
+			func(chunk []string) error {
+				return db.queryAutonomyChunk(
+					ctx, chunk, autonomyCounts,
 				)
+			})
+		if err != nil {
+			return SessionShapeResponse{}, err
 		}
 	}
 
@@ -1019,7 +1018,99 @@ func (db *DB) GetAnalyticsSessionShape(
 	}, nil
 }
 
+// queryAutonomyChunk queries autonomy stats for a chunk of
+// session IDs and accumulates results into counts.
+func (db *DB) queryAutonomyChunk(
+	ctx context.Context,
+	chunk []string,
+	counts map[string]int,
+) error {
+	ph, args := inPlaceholders(chunk)
+	q := `SELECT session_id,
+		SUM(CASE WHEN role='user' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN role='assistant'
+			AND has_tool_use=1 THEN 1 ELSE 0 END)
+		FROM messages
+		WHERE session_id IN ` + ph + `
+		GROUP BY session_id`
+
+	rows, err := db.reader.QueryContext(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("querying autonomy: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var sid string
+		var userCount, toolCount int
+		if err := rows.Scan(
+			&sid, &userCount, &toolCount,
+		); err != nil {
+			return fmt.Errorf("scanning autonomy row: %w", err)
+		}
+		if userCount > 0 {
+			ratio := float64(toolCount) / float64(userCount)
+			counts[autonomyBucket(ratio)]++
+		}
+	}
+	return rows.Err()
+}
+
 // --- Velocity ---
+
+// velocityMsg holds per-message data needed for velocity
+// calculations.
+type velocityMsg struct {
+	role          string
+	ts            time.Time
+	valid         bool
+	contentLength int
+}
+
+// queryVelocityMsgs fetches messages for a chunk of session IDs
+// and appends them to sessionMsgs, keyed by session ID.
+func (db *DB) queryVelocityMsgs(
+	ctx context.Context,
+	chunk []string,
+	loc *time.Location,
+	sessionMsgs map[string][]velocityMsg,
+) error {
+	ph, args := inPlaceholders(chunk)
+	q := `SELECT session_id, ordinal, role,
+		timestamp, content_length
+		FROM messages
+		WHERE session_id IN ` + ph + `
+		ORDER BY session_id, ordinal`
+
+	rows, err := db.reader.QueryContext(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf(
+			"querying velocity messages: %w", err,
+		)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var sid string
+		var ordinal int
+		var role, ts string
+		var cl int
+		if err := rows.Scan(
+			&sid, &ordinal, &role, &ts, &cl,
+		); err != nil {
+			return fmt.Errorf(
+				"scanning velocity msg: %w", err,
+			)
+		}
+		t, ok := localTime(ts, loc)
+		sessionMsgs[sid] = append(sessionMsgs[sid],
+			velocityMsg{
+				role: role, ts: t, valid: ok,
+				contentLength: cl,
+			})
+	}
+	return rows.Err()
+}
 
 // Percentiles holds p50 and p90 values.
 type Percentiles struct {
@@ -1155,58 +1246,16 @@ func (db *DB) GetAnalyticsVelocity(
 		}, nil
 	}
 
-	// Phase 2: Fetch messages for filtered sessions
-	placeholders := make([]string, len(sessionIDs))
-	msgArgs := make([]any, len(sessionIDs))
-	for i, id := range sessionIDs {
-		placeholders[i] = "?"
-		msgArgs[i] = id
-	}
-	msgQuery := `SELECT session_id, ordinal, role,
-		timestamp, content_length
-		FROM messages
-		WHERE session_id IN (` +
-		strings.Join(placeholders, ",") + `)
-		ORDER BY session_id, ordinal`
-
-	msgRows, err := db.reader.QueryContext(
-		ctx, msgQuery, msgArgs...,
-	)
-	if err != nil {
-		return VelocityResponse{},
-			fmt.Errorf("querying velocity messages: %w", err)
-	}
-	defer msgRows.Close()
-
-	type msgInfo struct {
-		role          string
-		ts            time.Time
-		valid         bool
-		contentLength int
-	}
-
-	// Group messages by session
-	sessionMsgs := make(map[string][]msgInfo)
-	for msgRows.Next() {
-		var sid string
-		var ordinal int
-		var role, ts string
-		var cl int
-		if err := msgRows.Scan(
-			&sid, &ordinal, &role, &ts, &cl,
-		); err != nil {
-			return VelocityResponse{},
-				fmt.Errorf("scanning velocity msg: %w", err)
-		}
-		t, ok := localTime(ts, loc)
-		sessionMsgs[sid] = append(sessionMsgs[sid], msgInfo{
-			role: role, ts: t, valid: ok,
-			contentLength: cl,
+	// Phase 2: Fetch messages for filtered sessions (chunked)
+	sessionMsgs := make(map[string][]velocityMsg)
+	err = queryChunked(sessionIDs,
+		func(chunk []string) error {
+			return db.queryVelocityMsgs(
+				ctx, chunk, loc, sessionMsgs,
+			)
 		})
-	}
-	if err := msgRows.Err(); err != nil {
-		return VelocityResponse{},
-			fmt.Errorf("iterating velocity msgs: %w", err)
+	if err != nil {
+		return VelocityResponse{}, err
 	}
 
 	// Process per-session metrics
@@ -1261,19 +1310,22 @@ func (db *DB) GetAnalyticsVelocity(
 			}
 		}
 
-		// First response: first user → first assistant
-		var firstUser, firstAsst *msgInfo
+		// First response: first user → first assistant after it
+		var firstUser, firstAsst *velocityMsg
 		for i := range msgs {
-			if msgs[i].role == "user" && msgs[i].valid &&
-				firstUser == nil {
+			if msgs[i].role == "user" && msgs[i].valid {
 				firstUser = &msgs[i]
-			}
-			if msgs[i].role == "assistant" && msgs[i].valid &&
-				firstAsst == nil {
-				firstAsst = &msgs[i]
-			}
-			if firstUser != nil && firstAsst != nil {
 				break
+			}
+		}
+		if firstUser != nil {
+			for i := range msgs {
+				if msgs[i].role == "assistant" &&
+					msgs[i].valid &&
+					msgs[i].ts.After(firstUser.ts) {
+					firstAsst = &msgs[i]
+					break
+				}
 			}
 		}
 		if firstUser != nil && firstAsst != nil {

@@ -1146,6 +1146,100 @@ func TestGetAnalyticsVelocity(t *testing.T) {
 			)
 		}
 	})
+
+	t.Run("AssistantBeforeUser", func(t *testing.T) {
+		d2 := testDB(t)
+		insertSession(t, d2, "v4", "proj", func(s *Session) {
+			s.StartedAt = Ptr("2024-06-01T09:00:00Z")
+			s.MessageCount = 3
+			s.Agent = "claude"
+		})
+		// Assistant at ordinal 0, user at ordinal 1,
+		// assistant at ordinal 2
+		insertMessages(t, d2,
+			Message{
+				SessionID: "v4", Ordinal: 0,
+				Role:    "assistant",
+				Content: "system greeting", ContentLength: 15,
+				Timestamp: "2024-06-01T09:00:00Z",
+			},
+			Message{
+				SessionID: "v4", Ordinal: 1, Role: "user",
+				Content: "hi", ContentLength: 2,
+				Timestamp: "2024-06-01T09:00:10Z",
+			},
+			Message{
+				SessionID: "v4", Ordinal: 2,
+				Role:    "assistant",
+				Content: "hello", ContentLength: 5,
+				Timestamp: "2024-06-01T09:00:20Z",
+			},
+		)
+		resp, err := d2.GetAnalyticsVelocity(ctx, baseFilter())
+		if err != nil {
+			t.Fatalf("GetAnalyticsVelocity: %v", err)
+		}
+		// First response: user@09:00:10 → asst@09:00:20 = 10s
+		// (should not use the assistant at ordinal 0)
+		if resp.Overall.FirstResponseSec.P50 != 10.0 {
+			t.Errorf(
+				"FirstResponse P50 = %f, want 10.0",
+				resp.Overall.FirstResponseSec.P50,
+			)
+		}
+	})
+}
+
+func TestVelocityChunkedQuery(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	// Seed >500 sessions to exercise chunked IN-clause logic.
+	const n = 600
+	for i := range n {
+		id := fmt.Sprintf("chunk-%d", i)
+		insertSession(t, d, id, "proj", func(s *Session) {
+			s.StartedAt = Ptr("2024-06-01T09:00:00Z")
+			s.MessageCount = 2
+			s.Agent = "claude"
+		})
+		insertMessages(t, d,
+			Message{
+				SessionID: id, Ordinal: 0, Role: "user",
+				Content: "q", ContentLength: 1,
+				Timestamp: "2024-06-01T09:00:00Z",
+			},
+			Message{
+				SessionID: id, Ordinal: 1,
+				Role:    "assistant",
+				Content: "a", ContentLength: 1,
+				Timestamp: "2024-06-01T09:00:10Z",
+			},
+		)
+	}
+
+	// Velocity must not fail even with >500 sessions
+	resp, err := d.GetAnalyticsVelocity(ctx, baseFilter())
+	if err != nil {
+		t.Fatalf("GetAnalyticsVelocity with %d sessions: %v",
+			n, err)
+	}
+	if resp.ByComplexity[0].Sessions != n {
+		t.Errorf("sessions = %d, want %d",
+			resp.ByComplexity[0].Sessions, n)
+	}
+
+	// SessionShape must not fail either
+	shape, err := d.GetAnalyticsSessionShape(ctx, baseFilter())
+	if err != nil {
+		t.Fatalf(
+			"GetAnalyticsSessionShape with %d sessions: %v",
+			n, err,
+		)
+	}
+	if shape.Count != n {
+		t.Errorf("Count = %d, want %d", shape.Count, n)
+	}
 }
 
 func TestPercentileFloat(t *testing.T) {

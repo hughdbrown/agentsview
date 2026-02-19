@@ -61,8 +61,8 @@ export function listSessions(
   if (params.date) q.set("date", params.date);
   if (params.date_from) q.set("date_from", params.date_from);
   if (params.date_to) q.set("date_to", params.date_to);
-  if (params.min_messages) q.set("min_messages", String(params.min_messages));
-  if (params.max_messages) q.set("max_messages", String(params.max_messages));
+  if (params.min_messages != null) q.set("min_messages", String(params.min_messages));
+  if (params.max_messages != null) q.set("max_messages", String(params.max_messages));
   if (params.cursor) q.set("cursor", params.cursor);
   if (params.limit) q.set("limit", String(params.limit));
   const qs = q.toString();
