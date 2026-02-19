@@ -3,12 +3,18 @@ import type {
   ActivityResponse,
   HeatmapResponse,
   ProjectsAnalyticsResponse,
+  HourOfWeekResponse,
+  SessionShapeResponse,
+  VelocityResponse,
 } from "../api/types.js";
 import {
   getAnalyticsSummary,
   getAnalyticsActivity,
   getAnalyticsHeatmap,
   getAnalyticsProjects,
+  getAnalyticsHourOfWeek,
+  getAnalyticsSessionShape,
+  getAnalyticsVelocity,
   type AnalyticsParams,
 } from "../api/client.js";
 import { router } from "./router.svelte.js";
@@ -30,7 +36,14 @@ function today(): string {
   return localDateStr(new Date());
 }
 
-type Panel = "summary" | "activity" | "heatmap" | "projects";
+type Panel =
+  | "summary"
+  | "activity"
+  | "heatmap"
+  | "projects"
+  | "hourOfWeek"
+  | "sessionShape"
+  | "velocity";
 
 class AnalyticsStore {
   from: string = $state(daysAgo(30));
@@ -43,12 +56,18 @@ class AnalyticsStore {
   activity = $state<ActivityResponse | null>(null);
   heatmap = $state<HeatmapResponse | null>(null);
   projects = $state<ProjectsAnalyticsResponse | null>(null);
+  hourOfWeek = $state<HourOfWeekResponse | null>(null);
+  sessionShape = $state<SessionShapeResponse | null>(null);
+  velocity = $state<VelocityResponse | null>(null);
 
   loading = $state({
     summary: false,
     activity: false,
     heatmap: false,
     projects: false,
+    hourOfWeek: false,
+    sessionShape: false,
+    velocity: false,
   });
 
   errors = $state<Record<Panel, string | null>>({
@@ -56,6 +75,9 @@ class AnalyticsStore {
     activity: null,
     heatmap: null,
     projects: null,
+    hourOfWeek: null,
+    sessionShape: null,
+    velocity: null,
   });
 
   // Per-panel version counters to avoid cross-panel conflicts.
@@ -64,6 +86,9 @@ class AnalyticsStore {
     activity: 0,
     heatmap: 0,
     projects: 0,
+    hourOfWeek: 0,
+    sessionShape: 0,
+    velocity: 0,
   };
 
   private baseParams(): AnalyticsParams {
@@ -94,6 +119,9 @@ class AnalyticsStore {
       this.fetchActivity(),
       this.fetchHeatmap(),
       this.fetchProjects(),
+      this.fetchHourOfWeek(),
+      this.fetchSessionShape(),
+      this.fetchVelocity(),
     ]);
   }
 
@@ -189,6 +217,75 @@ class AnalyticsStore {
     }
   }
 
+  async fetchHourOfWeek() {
+    const v = ++this.versions.hourOfWeek;
+    this.loading.hourOfWeek = true;
+    this.errors.hourOfWeek = null;
+    try {
+      const data = await getAnalyticsHourOfWeek(
+        this.baseParams(),
+      );
+      if (this.versions.hourOfWeek === v) {
+        this.hourOfWeek = data;
+      }
+    } catch (e) {
+      if (this.versions.hourOfWeek === v) {
+        this.errors.hourOfWeek =
+          e instanceof Error ? e.message : "Failed to load";
+      }
+    } finally {
+      if (this.versions.hourOfWeek === v) {
+        this.loading.hourOfWeek = false;
+      }
+    }
+  }
+
+  async fetchSessionShape() {
+    const v = ++this.versions.sessionShape;
+    this.loading.sessionShape = true;
+    this.errors.sessionShape = null;
+    try {
+      const data = await getAnalyticsSessionShape(
+        this.filterParams(),
+      );
+      if (this.versions.sessionShape === v) {
+        this.sessionShape = data;
+      }
+    } catch (e) {
+      if (this.versions.sessionShape === v) {
+        this.errors.sessionShape =
+          e instanceof Error ? e.message : "Failed to load";
+      }
+    } finally {
+      if (this.versions.sessionShape === v) {
+        this.loading.sessionShape = false;
+      }
+    }
+  }
+
+  async fetchVelocity() {
+    const v = ++this.versions.velocity;
+    this.loading.velocity = true;
+    this.errors.velocity = null;
+    try {
+      const data = await getAnalyticsVelocity(
+        this.filterParams(),
+      );
+      if (this.versions.velocity === v) {
+        this.velocity = data;
+      }
+    } catch (e) {
+      if (this.versions.velocity === v) {
+        this.errors.velocity =
+          e instanceof Error ? e.message : "Failed to load";
+      }
+    } finally {
+      if (this.versions.velocity === v) {
+        this.loading.velocity = false;
+      }
+    }
+  }
+
   setDateRange(from: string, to: string) {
     this.from = from;
     this.to = to;
@@ -206,6 +303,8 @@ class AnalyticsStore {
     this.fetchSummary();
     this.fetchActivity();
     this.fetchProjects();
+    this.fetchSessionShape();
+    this.fetchVelocity();
   }
 
   setGranularity(g: string) {

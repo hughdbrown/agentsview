@@ -17,6 +17,9 @@ import type {
   ActivityResponse,
   HeatmapResponse,
   ProjectsAnalyticsResponse,
+  HourOfWeekResponse,
+  SessionShapeResponse,
+  VelocityResponse,
 } from "./types.js";
 
 const BASE = "/api/v1";
@@ -346,5 +349,29 @@ export function getAnalyticsProjects(
 ): Promise<ProjectsAnalyticsResponse> {
   return fetchJSON(
     `/analytics/projects${analyticsQuery(params)}`,
+  );
+}
+
+export function getAnalyticsHourOfWeek(
+  params: AnalyticsParams,
+): Promise<HourOfWeekResponse> {
+  return fetchJSON(
+    `/analytics/hour-of-week${analyticsQuery(params)}`,
+  );
+}
+
+export function getAnalyticsSessionShape(
+  params: AnalyticsParams,
+): Promise<SessionShapeResponse> {
+  return fetchJSON(
+    `/analytics/sessions${analyticsQuery(params)}`,
+  );
+}
+
+export function getAnalyticsVelocity(
+  params: AnalyticsParams,
+): Promise<VelocityResponse> {
+  return fetchJSON(
+    `/analytics/velocity${analyticsQuery(params)}`,
   );
 }

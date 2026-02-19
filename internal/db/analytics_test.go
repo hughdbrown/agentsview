@@ -594,6 +594,18 @@ func TestAnalyticsCanceledContext(t *testing.T) {
 			_, err := d.GetAnalyticsProjects(ctx, f)
 			return err
 		}},
+		{"HourOfWeek", func() error {
+			_, err := d.GetAnalyticsHourOfWeek(ctx, f)
+			return err
+		}},
+		{"SessionShape", func() error {
+			_, err := d.GetAnalyticsSessionShape(ctx, f)
+			return err
+		}},
+		{"Velocity", func() error {
+			_, err := d.GetAnalyticsVelocity(ctx, f)
+			return err
+		}},
 	}
 
 	for _, tt := range tests {
@@ -686,4 +698,499 @@ func TestConcentrationTopThree(t *testing.T) {
 			)
 		}
 	})
+}
+
+func TestGetAnalyticsHourOfWeek(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	t.Run("EmptyDB", func(t *testing.T) {
+		resp, err := d.GetAnalyticsHourOfWeek(ctx, baseFilter())
+		if err != nil {
+			t.Fatalf("GetAnalyticsHourOfWeek: %v", err)
+		}
+		if len(resp.Cells) != 168 {
+			t.Errorf("len(Cells) = %d, want 168",
+				len(resp.Cells))
+		}
+		for _, c := range resp.Cells {
+			if c.Messages != 0 {
+				t.Errorf(
+					"day=%d hour=%d messages=%d, want 0",
+					c.DayOfWeek, c.Hour, c.Messages,
+				)
+			}
+		}
+	})
+
+	// Seed sessions with known UTC times:
+	// 2024-06-01 is Saturday, 09:00 UTC
+	insertSession(t, d, "hw1", "proj", func(s *Session) {
+		s.StartedAt = Ptr("2024-06-01T09:00:00Z")
+		s.MessageCount = 2
+		s.Agent = "claude"
+	})
+	insertMessages(t, d,
+		Message{
+			SessionID: "hw1", Ordinal: 0, Role: "user",
+			Content: "hi", ContentLength: 2,
+			Timestamp: "2024-06-01T09:00:00Z",
+		},
+		Message{
+			SessionID: "hw1", Ordinal: 1, Role: "assistant",
+			Content: "hello", ContentLength: 5,
+			Timestamp: "2024-06-01T09:30:00Z",
+		},
+	)
+
+	// 23:00 UTC on a Saturday
+	insertSession(t, d, "hw2", "proj", func(s *Session) {
+		s.StartedAt = Ptr("2024-06-01T23:00:00Z")
+		s.MessageCount = 1
+		s.Agent = "claude"
+	})
+	insertMessages(t, d, Message{
+		SessionID: "hw2", Ordinal: 0, Role: "user",
+		Content: "late", ContentLength: 4,
+		Timestamp: "2024-06-01T23:00:00Z",
+	})
+
+	t.Run("UTCBucketing", func(t *testing.T) {
+		resp, err := d.GetAnalyticsHourOfWeek(ctx, baseFilter())
+		if err != nil {
+			t.Fatalf("GetAnalyticsHourOfWeek: %v", err)
+		}
+		// Saturday = ISO day 5 (Mon=0)
+		// hour 9: 2 messages (user@09:00 + assistant@09:30)
+		satH9 := findHOWCell(resp.Cells, 5, 9)
+		if satH9 != 2 {
+			t.Errorf("Sat 09:xx = %d, want 2", satH9)
+		}
+		satH23 := findHOWCell(resp.Cells, 5, 23)
+		if satH23 != 1 {
+			t.Errorf("Sat 23:00 = %d, want 1", satH23)
+		}
+	})
+
+	t.Run("TimezoneShift", func(t *testing.T) {
+		f := AnalyticsFilter{
+			From:     "2024-06-01",
+			To:       "2024-06-03",
+			Timezone: "Asia/Karachi", // UTC+5
+		}
+		resp, err := d.GetAnalyticsHourOfWeek(ctx, f)
+		if err != nil {
+			t.Fatalf("GetAnalyticsHourOfWeek: %v", err)
+		}
+		// 23:00 UTC Sat → 04:00 Sun in UTC+5
+		// Sunday = ISO day 6
+		sunH4 := findHOWCell(resp.Cells, 6, 4)
+		if sunH4 != 1 {
+			t.Errorf(
+				"Sun 04:00 PKT = %d, want 1", sunH4,
+			)
+		}
+		// 09:00 UTC Sat → 14:00 Sat in UTC+5
+		// 09:30 UTC Sat → 14:30 Sat in UTC+5
+		// Both fall in hour 14
+		satH14 := findHOWCell(resp.Cells, 5, 14)
+		if satH14 != 2 {
+			t.Errorf(
+				"Sat 14:xx PKT = %d, want 2", satH14,
+			)
+		}
+	})
+}
+
+func findHOWCell(cells []HourOfWeekCell, dow, hour int) int {
+	for _, c := range cells {
+		if c.DayOfWeek == dow && c.Hour == hour {
+			return c.Messages
+		}
+	}
+	return -1
+}
+
+func TestGetAnalyticsSessionShape(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	t.Run("EmptyDB", func(t *testing.T) {
+		resp, err := d.GetAnalyticsSessionShape(
+			ctx, baseFilter(),
+		)
+		if err != nil {
+			t.Fatalf("GetAnalyticsSessionShape: %v", err)
+		}
+		if resp.Count != 0 {
+			t.Errorf("Count = %d, want 0", resp.Count)
+		}
+	})
+
+	// Session with 10 messages, 1h duration
+	insertSession(t, d, "ss1", "proj", func(s *Session) {
+		s.StartedAt = Ptr("2024-06-01T09:00:00Z")
+		s.EndedAt = Ptr("2024-06-01T10:00:00Z")
+		s.MessageCount = 10
+		s.Agent = "claude"
+	})
+	// 5 user + 5 assistant, assistant has tool_use
+	for i := range 10 {
+		role := "user"
+		hasTool := false
+		if i%2 == 1 {
+			role = "assistant"
+			hasTool = true
+		}
+		insertMessages(t, d, Message{
+			SessionID: "ss1", Ordinal: i, Role: role,
+			Content:       fmt.Sprintf("msg %d", i),
+			ContentLength: 10, HasToolUse: hasTool,
+			Timestamp: "2024-06-01T09:00:00Z",
+		})
+	}
+
+	// Session with 25 messages, no ended_at
+	insertSession(t, d, "ss2", "proj", func(s *Session) {
+		s.StartedAt = Ptr("2024-06-02T10:00:00Z")
+		s.MessageCount = 25
+		s.Agent = "claude"
+	})
+	for i := range 25 {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		insertMessages(t, d, Message{
+			SessionID: "ss2", Ordinal: i, Role: role,
+			Content:       fmt.Sprintf("msg %d", i),
+			ContentLength: 10,
+			Timestamp:     "2024-06-02T10:00:00Z",
+		})
+	}
+
+	t.Run("FullRange", func(t *testing.T) {
+		resp, err := d.GetAnalyticsSessionShape(
+			ctx, baseFilter(),
+		)
+		if err != nil {
+			t.Fatalf("GetAnalyticsSessionShape: %v", err)
+		}
+		if resp.Count != 2 {
+			t.Errorf("Count = %d, want 2", resp.Count)
+		}
+
+		// Length: 10 → "6-15", 25 → "16-30"
+		lenMap := bucketMap(resp.LengthDistribution)
+		if lenMap["6-15"] != 1 {
+			t.Errorf("6-15 = %d, want 1", lenMap["6-15"])
+		}
+		if lenMap["16-30"] != 1 {
+			t.Errorf("16-30 = %d, want 1", lenMap["16-30"])
+		}
+
+		// Duration: only ss1 has both start/end (60m → "1-2h")
+		durMap := bucketMap(resp.DurationDistribution)
+		if durMap["1-2h"] != 1 {
+			t.Errorf("1-2h = %d, want 1", durMap["1-2h"])
+		}
+		totalDur := 0
+		for _, b := range resp.DurationDistribution {
+			totalDur += b.Count
+		}
+		if totalDur != 1 {
+			t.Errorf(
+				"total duration entries = %d, want 1",
+				totalDur,
+			)
+		}
+	})
+
+	t.Run("Autonomy", func(t *testing.T) {
+		resp, err := d.GetAnalyticsSessionShape(
+			ctx, baseFilter(),
+		)
+		if err != nil {
+			t.Fatalf("GetAnalyticsSessionShape: %v", err)
+		}
+		// ss1: 5 user, 5 assistant w/ tool → ratio 5/5=1.0 → "1-2"
+		// ss2: 13 user, 0 tool → ratio 0/13=0 → "<0.5"
+		autoMap := bucketMap(resp.AutonomyDistribution)
+		if autoMap["1-2"] != 1 {
+			t.Errorf("1-2 = %d, want 1", autoMap["1-2"])
+		}
+		if autoMap["<0.5"] != 1 {
+			t.Errorf("<0.5 = %d, want 1", autoMap["<0.5"])
+		}
+	})
+
+	t.Run("EmptyRange", func(t *testing.T) {
+		resp, err := d.GetAnalyticsSessionShape(
+			ctx, emptyFilter(),
+		)
+		if err != nil {
+			t.Fatalf("GetAnalyticsSessionShape: %v", err)
+		}
+		if resp.Count != 0 {
+			t.Errorf("Count = %d, want 0", resp.Count)
+		}
+	})
+}
+
+func bucketMap(
+	buckets []DistributionBucket,
+) map[string]int {
+	m := make(map[string]int)
+	for _, b := range buckets {
+		m[b.Label] = b.Count
+	}
+	return m
+}
+
+func TestGetAnalyticsVelocity(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	t.Run("EmptyDB", func(t *testing.T) {
+		resp, err := d.GetAnalyticsVelocity(ctx, baseFilter())
+		if err != nil {
+			t.Fatalf("GetAnalyticsVelocity: %v", err)
+		}
+		if len(resp.ByAgent) != 0 {
+			t.Errorf(
+				"len(ByAgent) = %d, want 0",
+				len(resp.ByAgent),
+			)
+		}
+	})
+
+	// Session with messages at precise timestamps (10s apart)
+	insertSession(t, d, "v1", "proj", func(s *Session) {
+		s.StartedAt = Ptr("2024-06-01T09:00:00Z")
+		s.EndedAt = Ptr("2024-06-01T09:01:00Z")
+		s.MessageCount = 6
+		s.Agent = "claude"
+	})
+	insertMessages(t, d,
+		Message{
+			SessionID: "v1", Ordinal: 0, Role: "user",
+			Content: "hi", ContentLength: 2,
+			Timestamp: "2024-06-01T09:00:00Z",
+		},
+		Message{
+			SessionID: "v1", Ordinal: 1, Role: "assistant",
+			Content: "hello there", ContentLength: 11,
+			Timestamp: "2024-06-01T09:00:10Z",
+		},
+		Message{
+			SessionID: "v1", Ordinal: 2, Role: "user",
+			Content: "do X", ContentLength: 4,
+			Timestamp: "2024-06-01T09:00:20Z",
+		},
+		Message{
+			SessionID: "v1", Ordinal: 3, Role: "assistant",
+			Content: "done X ok", ContentLength: 9,
+			Timestamp: "2024-06-01T09:00:30Z",
+		},
+		Message{
+			SessionID: "v1", Ordinal: 4, Role: "user",
+			Content: "do Y", ContentLength: 4,
+			Timestamp: "2024-06-01T09:00:40Z",
+		},
+		Message{
+			SessionID: "v1", Ordinal: 5, Role: "assistant",
+			Content: "done Y ok", ContentLength: 9,
+			Timestamp: "2024-06-01T09:00:50Z",
+		},
+	)
+
+	t.Run("TurnCycle", func(t *testing.T) {
+		resp, err := d.GetAnalyticsVelocity(ctx, baseFilter())
+		if err != nil {
+			t.Fatalf("GetAnalyticsVelocity: %v", err)
+		}
+		// Turn cycles: user→asst at 0→10 (10s), 20→30 (10s),
+		// 40→50 (10s). All 10s.
+		if resp.Overall.TurnCycleSec.P50 != 10.0 {
+			t.Errorf("TurnCycle P50 = %f, want 10.0",
+				resp.Overall.TurnCycleSec.P50)
+		}
+	})
+
+	t.Run("FirstResponse", func(t *testing.T) {
+		resp, err := d.GetAnalyticsVelocity(ctx, baseFilter())
+		if err != nil {
+			t.Fatalf("GetAnalyticsVelocity: %v", err)
+		}
+		// First user at 09:00:00, first asst at 09:00:10 = 10s
+		if resp.Overall.FirstResponseSec.P50 != 10.0 {
+			t.Errorf("FirstResponse P50 = %f, want 10.0",
+				resp.Overall.FirstResponseSec.P50)
+		}
+	})
+
+	t.Run("Throughput", func(t *testing.T) {
+		resp, err := d.GetAnalyticsVelocity(ctx, baseFilter())
+		if err != nil {
+			t.Fatalf("GetAnalyticsVelocity: %v", err)
+		}
+		// Active time: 5 gaps of 10s = 50s ≈ 0.833 min
+		// 6 msgs / 0.833 = ~7.2 msgs/min
+		if resp.Overall.MsgsPerActiveMin < 7.0 ||
+			resp.Overall.MsgsPerActiveMin > 7.5 {
+			t.Errorf("MsgsPerActiveMin = %f, want ~7.2",
+				resp.Overall.MsgsPerActiveMin)
+		}
+	})
+
+	t.Run("ByAgent", func(t *testing.T) {
+		resp, err := d.GetAnalyticsVelocity(ctx, baseFilter())
+		if err != nil {
+			t.Fatalf("GetAnalyticsVelocity: %v", err)
+		}
+		if len(resp.ByAgent) != 1 {
+			t.Fatalf(
+				"len(ByAgent) = %d, want 1",
+				len(resp.ByAgent),
+			)
+		}
+		if resp.ByAgent[0].Label != "claude" {
+			t.Errorf("ByAgent[0].Label = %q, want claude",
+				resp.ByAgent[0].Label)
+		}
+		if resp.ByAgent[0].Sessions != 1 {
+			t.Errorf("ByAgent[0].Sessions = %d, want 1",
+				resp.ByAgent[0].Sessions)
+		}
+	})
+
+	t.Run("ByComplexity", func(t *testing.T) {
+		resp, err := d.GetAnalyticsVelocity(ctx, baseFilter())
+		if err != nil {
+			t.Fatalf("GetAnalyticsVelocity: %v", err)
+		}
+		// 6 messages → "1-15" bucket
+		if len(resp.ByComplexity) != 1 {
+			t.Fatalf("len(ByComplexity) = %d, want 1",
+				len(resp.ByComplexity))
+		}
+		if resp.ByComplexity[0].Label != "1-15" {
+			t.Errorf(
+				"ByComplexity[0].Label = %q, want 1-15",
+				resp.ByComplexity[0].Label,
+			)
+		}
+	})
+
+	t.Run("LargeCycleExcluded", func(t *testing.T) {
+		d2 := testDB(t)
+		insertSession(t, d2, "v2", "proj", func(s *Session) {
+			s.StartedAt = Ptr("2024-06-01T09:00:00Z")
+			s.MessageCount = 2
+			s.Agent = "claude"
+		})
+		// 45min gap → exceeds 1800s threshold
+		insertMessages(t, d2,
+			Message{
+				SessionID: "v2", Ordinal: 0, Role: "user",
+				Content: "q", ContentLength: 1,
+				Timestamp: "2024-06-01T09:00:00Z",
+			},
+			Message{
+				SessionID: "v2", Ordinal: 1,
+				Role:    "assistant",
+				Content: "a", ContentLength: 1,
+				Timestamp: "2024-06-01T09:45:00Z",
+			},
+		)
+		resp, err := d2.GetAnalyticsVelocity(ctx, baseFilter())
+		if err != nil {
+			t.Fatalf("GetAnalyticsVelocity: %v", err)
+		}
+		if resp.Overall.TurnCycleSec.P50 != 0 {
+			t.Errorf(
+				"TurnCycle P50 = %f, want 0 (excluded)",
+				resp.Overall.TurnCycleSec.P50,
+			)
+		}
+	})
+
+	t.Run("EmptyTimestampsSkipped", func(t *testing.T) {
+		d2 := testDB(t)
+		insertSession(t, d2, "v3", "proj", func(s *Session) {
+			s.StartedAt = Ptr("2024-06-01T09:00:00Z")
+			s.MessageCount = 2
+			s.Agent = "claude"
+		})
+		insertMessages(t, d2,
+			Message{
+				SessionID: "v3", Ordinal: 0, Role: "user",
+				Content: "q", ContentLength: 1,
+				Timestamp: "",
+			},
+			Message{
+				SessionID: "v3", Ordinal: 1,
+				Role:    "assistant",
+				Content: "a", ContentLength: 1,
+				Timestamp: "",
+			},
+		)
+		resp, err := d2.GetAnalyticsVelocity(ctx, baseFilter())
+		if err != nil {
+			t.Fatalf("GetAnalyticsVelocity: %v", err)
+		}
+		if resp.Overall.TurnCycleSec.P50 != 0 {
+			t.Errorf(
+				"TurnCycle P50 = %f, want 0 (empty ts)",
+				resp.Overall.TurnCycleSec.P50,
+			)
+		}
+	})
+}
+
+func TestPercentileFloat(t *testing.T) {
+	tests := []struct {
+		name   string
+		sorted []float64
+		pct    float64
+		want   float64
+	}{
+		{"Empty", []float64{}, 0.5, 0},
+		{"Single", []float64{5.0}, 0.5, 5.0},
+		{"P50Odd", []float64{1, 3, 7}, 0.5, 3.0},
+		{"P90", []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 0.9, 10.0},
+		{"P50Even", []float64{1, 2, 3, 4}, 0.5, 3.0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := percentileFloat(tt.sorted, tt.pct)
+			if got != tt.want {
+				t.Errorf("percentileFloat(%v, %f) = %f, want %f",
+					tt.sorted, tt.pct, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLocalTime(t *testing.T) {
+	tests := []struct {
+		name  string
+		ts    string
+		valid bool
+	}{
+		{"RFC3339", "2024-06-01T15:00:00Z", true},
+		{"RFC3339Nano", "2024-06-01T15:00:00.123Z", true},
+		{"NoFraction", "2024-06-01T15:00:00Z", true},
+		{"BadFormat", "2024-06-01", false},
+		{"Empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ok := localTime(tt.ts, time.UTC)
+			if ok != tt.valid {
+				t.Errorf("localTime(%q) ok = %v, want %v",
+					tt.ts, ok, tt.valid)
+			}
+		})
+	}
 }

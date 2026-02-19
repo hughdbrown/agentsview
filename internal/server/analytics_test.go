@@ -126,6 +126,9 @@ func TestAnalyticsErrorRedaction(t *testing.T) {
 		"/api/v1/analytics/activity" + analyticsRange,
 		"/api/v1/analytics/heatmap" + analyticsRange,
 		"/api/v1/analytics/projects" + analyticsRange,
+		"/api/v1/analytics/hour-of-week" + analyticsRange,
+		"/api/v1/analytics/sessions" + analyticsRange,
+		"/api/v1/analytics/velocity" + analyticsRange,
 	}
 	for _, ep := range endpoints {
 		t.Run(ep, func(t *testing.T) {
@@ -310,5 +313,72 @@ func TestAnalyticsProjects(t *testing.T) {
 			t.Errorf("len(Projects) = %d, want 0",
 				len(resp.Projects))
 		}
+	})
+}
+
+func TestAnalyticsHourOfWeek(t *testing.T) {
+	te := setup(t)
+	seedAnalyticsEnv(t, te)
+
+	t.Run("OK", func(t *testing.T) {
+		w := te.get(t,
+			"/api/v1/analytics/hour-of-week"+analyticsRange+
+				"&timezone=UTC")
+		assertStatus(t, w, http.StatusOK)
+
+		resp := decode[db.HourOfWeekResponse](t, w)
+		if len(resp.Cells) != 168 {
+			t.Errorf("len(Cells) = %d, want 168",
+				len(resp.Cells))
+		}
+	})
+
+	t.Run("DefaultParams", func(t *testing.T) {
+		w := te.get(t, "/api/v1/analytics/hour-of-week")
+		assertStatus(t, w, http.StatusOK)
+	})
+}
+
+func TestAnalyticsSessionShape(t *testing.T) {
+	te := setup(t)
+	seedAnalyticsEnv(t, te)
+
+	t.Run("OK", func(t *testing.T) {
+		w := te.get(t,
+			"/api/v1/analytics/sessions"+analyticsRange+
+				"&timezone=UTC")
+		assertStatus(t, w, http.StatusOK)
+
+		resp := decode[db.SessionShapeResponse](t, w)
+		if resp.Count != 3 {
+			t.Errorf("Count = %d, want 3", resp.Count)
+		}
+	})
+
+	t.Run("DefaultParams", func(t *testing.T) {
+		w := te.get(t, "/api/v1/analytics/sessions")
+		assertStatus(t, w, http.StatusOK)
+	})
+}
+
+func TestAnalyticsVelocity(t *testing.T) {
+	te := setup(t)
+	seedAnalyticsEnv(t, te)
+
+	t.Run("OK", func(t *testing.T) {
+		w := te.get(t,
+			"/api/v1/analytics/velocity"+analyticsRange+
+				"&timezone=UTC")
+		assertStatus(t, w, http.StatusOK)
+
+		resp := decode[db.VelocityResponse](t, w)
+		if len(resp.ByAgent) == 0 {
+			t.Error("expected non-empty ByAgent")
+		}
+	})
+
+	t.Run("DefaultParams", func(t *testing.T) {
+		w := te.get(t, "/api/v1/analytics/velocity")
+		assertStatus(t, w, http.StatusOK)
 	})
 }

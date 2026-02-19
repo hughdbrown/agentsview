@@ -12,6 +12,9 @@ import type {
   ActivityResponse,
   HeatmapResponse,
   ProjectsAnalyticsResponse,
+  HourOfWeekResponse,
+  SessionShapeResponse,
+  VelocityResponse,
 } from "../api/types.js";
 
 vi.mock("../api/client.js", () => ({
@@ -19,6 +22,9 @@ vi.mock("../api/client.js", () => ({
   getAnalyticsActivity: vi.fn(),
   getAnalyticsHeatmap: vi.fn(),
   getAnalyticsProjects: vi.fn(),
+  getAnalyticsHourOfWeek: vi.fn(),
+  getAnalyticsSessionShape: vi.fn(),
+  getAnalyticsVelocity: vi.fn(),
 }));
 
 vi.mock("./router.svelte.js", () => ({
@@ -56,6 +62,32 @@ function makeProjects(): ProjectsAnalyticsResponse {
   return { projects: [] };
 }
 
+function makeHourOfWeek(): HourOfWeekResponse {
+  return { cells: [] };
+}
+
+function makeSessionShape(): SessionShapeResponse {
+  return {
+    count: 0,
+    length_distribution: [],
+    duration_distribution: [],
+    autonomy_distribution: [],
+  };
+}
+
+function makeVelocity(): VelocityResponse {
+  return {
+    overall: {
+      turn_cycle_sec: { p50: 0, p90: 0 },
+      first_response_sec: { p50: 0, p90: 0 },
+      msgs_per_active_min: 0,
+      chars_per_active_min: 0,
+    },
+    by_agent: [],
+    by_complexity: [],
+  };
+}
+
 function mockAllAPIs() {
   vi.mocked(api.getAnalyticsSummary).mockResolvedValue(
     makeSummary(),
@@ -68,6 +100,15 @@ function mockAllAPIs() {
   );
   vi.mocked(api.getAnalyticsProjects).mockResolvedValue(
     makeProjects(),
+  );
+  vi.mocked(api.getAnalyticsHourOfWeek).mockResolvedValue(
+    makeHourOfWeek(),
+  );
+  vi.mocked(api.getAnalyticsSessionShape).mockResolvedValue(
+    makeSessionShape(),
+  );
+  vi.mocked(api.getAnalyticsVelocity).mockResolvedValue(
+    makeVelocity(),
   );
 }
 
@@ -121,13 +162,16 @@ describe("AnalyticsStore.selectDate", () => {
     expect(analytics.selectedDate).toBe("2024-01-20");
   });
 
-  it("should fetch summary, activity, projects but not heatmap", () => {
+  it("should fetch filtered panels but not heatmap/hourOfWeek", () => {
     analytics.selectDate("2024-01-15");
 
     expect(api.getAnalyticsSummary).toHaveBeenCalledTimes(1);
     expect(api.getAnalyticsActivity).toHaveBeenCalledTimes(1);
     expect(api.getAnalyticsProjects).toHaveBeenCalledTimes(1);
+    expect(api.getAnalyticsSessionShape).toHaveBeenCalledTimes(1);
+    expect(api.getAnalyticsVelocity).toHaveBeenCalledTimes(1);
     expect(api.getAnalyticsHeatmap).not.toHaveBeenCalled();
+    expect(api.getAnalyticsHourOfWeek).not.toHaveBeenCalled();
   });
 
   it("should pass selected date as from/to for filtered panels", () => {
@@ -183,6 +227,9 @@ describe("AnalyticsStore.setDateRange", () => {
     expect(api.getAnalyticsActivity).toHaveBeenCalledTimes(1);
     expect(api.getAnalyticsHeatmap).toHaveBeenCalledTimes(1);
     expect(api.getAnalyticsProjects).toHaveBeenCalledTimes(1);
+    expect(api.getAnalyticsHourOfWeek).toHaveBeenCalledTimes(1);
+    expect(api.getAnalyticsSessionShape).toHaveBeenCalledTimes(1);
+    expect(api.getAnalyticsVelocity).toHaveBeenCalledTimes(1);
 
     assertParams(
       api.getAnalyticsSummary, "2024-02-01", "2024-02-28",
@@ -195,6 +242,15 @@ describe("AnalyticsStore.setDateRange", () => {
     );
     assertParams(
       api.getAnalyticsProjects, "2024-02-01", "2024-02-28",
+    );
+    assertParams(
+      api.getAnalyticsHourOfWeek, "2024-02-01", "2024-02-28",
+    );
+    assertParams(
+      api.getAnalyticsSessionShape, "2024-02-01", "2024-02-28",
+    );
+    assertParams(
+      api.getAnalyticsVelocity, "2024-02-01", "2024-02-28",
     );
   });
 });

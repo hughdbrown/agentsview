@@ -187,3 +187,75 @@ func (s *Server) handleAnalyticsProjects(
 
 	writeJSON(w, http.StatusOK, result)
 }
+
+func (s *Server) handleAnalyticsHourOfWeek(
+	w http.ResponseWriter, r *http.Request,
+) {
+	f, ok := parseAnalyticsFilter(w, r)
+	if !ok {
+		return
+	}
+
+	result, err := s.db.GetAnalyticsHourOfWeek(
+		r.Context(), f,
+	)
+	if err != nil {
+		if handleContextError(w, err) {
+			return
+		}
+		log.Printf("analytics error: %v", err)
+		writeError(w, http.StatusInternalServerError,
+			"internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleAnalyticsSessionShape(
+	w http.ResponseWriter, r *http.Request,
+) {
+	f, ok := parseAnalyticsFilter(w, r)
+	if !ok {
+		return
+	}
+
+	result, err := s.db.GetAnalyticsSessionShape(
+		r.Context(), f,
+	)
+	if err != nil {
+		if handleContextError(w, err) {
+			return
+		}
+		log.Printf("analytics error: %v", err)
+		writeError(w, http.StatusInternalServerError,
+			"internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleAnalyticsVelocity(
+	w http.ResponseWriter, r *http.Request,
+) {
+	f, ok := parseAnalyticsFilter(w, r)
+	if !ok {
+		return
+	}
+
+	result, err := s.db.GetAnalyticsVelocity(
+		r.Context(), f,
+	)
+	if err != nil {
+		if handleContextError(w, err) {
+			return
+		}
+		log.Printf("analytics error: %v", err)
+		writeError(w, http.StatusInternalServerError,
+			"internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}

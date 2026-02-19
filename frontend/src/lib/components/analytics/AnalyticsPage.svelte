@@ -5,6 +5,9 @@
   import Heatmap from "./Heatmap.svelte";
   import ActivityTimeline from "./ActivityTimeline.svelte";
   import ProjectBreakdown from "./ProjectBreakdown.svelte";
+  import HourOfWeekHeatmap from "./HourOfWeekHeatmap.svelte";
+  import SessionShape from "./SessionShape.svelte";
+  import VelocityMetrics from "./VelocityMetrics.svelte";
   import { analytics } from "../../stores/analytics.svelte.js";
   import { router } from "../../stores/router.svelte.js";
 
@@ -27,12 +30,24 @@
         <Heatmap />
       </div>
 
+      <div class="chart-panel wide">
+        <HourOfWeekHeatmap />
+      </div>
+
       <div class="chart-panel">
         <ActivityTimeline />
       </div>
 
       <div class="chart-panel">
         <ProjectBreakdown />
+      </div>
+
+      <div class="chart-panel">
+        <SessionShape />
+      </div>
+
+      <div class="chart-panel wide">
+        <VelocityMetrics />
       </div>
     </div>
   </div>

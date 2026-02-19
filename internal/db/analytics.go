@@ -73,20 +73,46 @@ func (f AnalyticsFilter) buildWhere(
 	return strings.Join(preds, " AND "), args
 }
 
-// localDate converts a UTC timestamp string to a local date
-// string (YYYY-MM-DD) in the given location.
-func localDate(ts string, loc *time.Location) string {
+// localTime parses a UTC timestamp string and converts it to the
+// given location. Returns the local time and true on success.
+func localTime(
+	ts string, loc *time.Location,
+) (time.Time, bool) {
 	t, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
 		t, err = time.Parse("2006-01-02T15:04:05Z", ts)
 		if err != nil {
-			if len(ts) >= 10 {
-				return ts[:10]
-			}
-			return ""
+			return time.Time{}, false
 		}
 	}
-	return t.In(loc).Format("2006-01-02")
+	return t.In(loc), true
+}
+
+// localDate converts a UTC timestamp string to a local date
+// string (YYYY-MM-DD) in the given location.
+func localDate(ts string, loc *time.Location) string {
+	t, ok := localTime(ts, loc)
+	if !ok {
+		if len(ts) >= 10 {
+			return ts[:10]
+		}
+		return ""
+	}
+	return t.Format("2006-01-02")
+}
+
+// percentileFloat returns the value at the given percentile
+// from a pre-sorted float64 slice.
+func percentileFloat(sorted []float64, pct float64) float64 {
+	n := len(sorted)
+	if n == 0 {
+		return 0
+	}
+	idx := int(float64(n) * pct)
+	if idx >= n {
+		idx = n - 1
+	}
+	return sorted[idx]
 }
 
 // inDateRange checks if a local date falls within [from, to].
@@ -679,4 +705,658 @@ func (db *DB) GetAnalyticsProjects(
 	})
 
 	return ProjectsAnalyticsResponse{Projects: projects}, nil
+}
+
+// --- Hour-of-Week ---
+
+// HourOfWeekCell is one cell in the 7x24 hour-of-week grid.
+type HourOfWeekCell struct {
+	DayOfWeek int `json:"day_of_week"` // 0=Mon, 6=Sun
+	Hour      int `json:"hour"`        // 0-23
+	Messages  int `json:"messages"`
+}
+
+// HourOfWeekResponse wraps the hour-of-week heatmap data.
+type HourOfWeekResponse struct {
+	Cells []HourOfWeekCell `json:"cells"`
+}
+
+// GetAnalyticsHourOfWeek returns message counts bucketed by
+// day-of-week and hour-of-day in the user's timezone.
+func (db *DB) GetAnalyticsHourOfWeek(
+	ctx context.Context, f AnalyticsFilter,
+) (HourOfWeekResponse, error) {
+	loc := f.location()
+	dateCol := "COALESCE(s.started_at, s.created_at)"
+	where, args := f.buildWhere(dateCol)
+
+	query := `SELECT ` + dateCol + `, m.timestamp
+		FROM sessions s
+		JOIN messages m ON m.session_id = s.id
+		WHERE ` + where + ` AND m.timestamp != ''`
+
+	rows, err := db.reader.QueryContext(ctx, query, args...)
+	if err != nil {
+		return HourOfWeekResponse{},
+			fmt.Errorf("querying hour-of-week: %w", err)
+	}
+	defer rows.Close()
+
+	var grid [7][24]int
+
+	for rows.Next() {
+		var sessTS, msgTS string
+		if err := rows.Scan(&sessTS, &msgTS); err != nil {
+			return HourOfWeekResponse{},
+				fmt.Errorf("scanning hour-of-week row: %w", err)
+		}
+		sessDate := localDate(sessTS, loc)
+		if !inDateRange(sessDate, f.From, f.To) {
+			continue
+		}
+		t, ok := localTime(msgTS, loc)
+		if !ok {
+			continue
+		}
+		// Go Sunday=0, convert to ISO Monday=0
+		dow := (int(t.Weekday()) + 6) % 7
+		grid[dow][t.Hour()]++
+	}
+	if err := rows.Err(); err != nil {
+		return HourOfWeekResponse{},
+			fmt.Errorf("iterating hour-of-week rows: %w", err)
+	}
+
+	cells := make([]HourOfWeekCell, 0, 168)
+	for d := range 7 {
+		for h := range 24 {
+			cells = append(cells, HourOfWeekCell{
+				DayOfWeek: d,
+				Hour:      h,
+				Messages:  grid[d][h],
+			})
+		}
+	}
+
+	return HourOfWeekResponse{Cells: cells}, nil
+}
+
+// --- Session Shape ---
+
+// DistributionBucket is a labeled count for histogram display.
+type DistributionBucket struct {
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
+// SessionShapeResponse holds distribution histograms for session
+// characteristics.
+type SessionShapeResponse struct {
+	Count                int                  `json:"count"`
+	LengthDistribution   []DistributionBucket `json:"length_distribution"`
+	DurationDistribution []DistributionBucket `json:"duration_distribution"`
+	AutonomyDistribution []DistributionBucket `json:"autonomy_distribution"`
+}
+
+// lengthBucket returns the bucket label for a message count.
+func lengthBucket(mc int) string {
+	switch {
+	case mc <= 5:
+		return "1-5"
+	case mc <= 15:
+		return "6-15"
+	case mc <= 30:
+		return "16-30"
+	case mc <= 60:
+		return "31-60"
+	case mc <= 120:
+		return "61-120"
+	default:
+		return "121+"
+	}
+}
+
+// durationBucket returns the bucket label for a duration in
+// minutes.
+func durationBucket(mins float64) string {
+	switch {
+	case mins < 5:
+		return "<5m"
+	case mins < 15:
+		return "5-15m"
+	case mins < 30:
+		return "15-30m"
+	case mins < 60:
+		return "30-60m"
+	case mins < 120:
+		return "1-2h"
+	default:
+		return "2h+"
+	}
+}
+
+// autonomyBucket returns the bucket label for an autonomy ratio.
+func autonomyBucket(ratio float64) string {
+	switch {
+	case ratio < 0.5:
+		return "<0.5"
+	case ratio < 1:
+		return "0.5-1"
+	case ratio < 2:
+		return "1-2"
+	case ratio < 5:
+		return "2-5"
+	case ratio < 10:
+		return "5-10"
+	default:
+		return "10+"
+	}
+}
+
+// bucketOrder maps label → order index for consistent output.
+var (
+	lengthOrder = map[string]int{
+		"1-5": 0, "6-15": 1, "16-30": 2,
+		"31-60": 3, "61-120": 4, "121+": 5,
+	}
+	durationOrder = map[string]int{
+		"<5m": 0, "5-15m": 1, "15-30m": 2,
+		"30-60m": 3, "1-2h": 4, "2h+": 5,
+	}
+	autonomyOrder = map[string]int{
+		"<0.5": 0, "0.5-1": 1, "1-2": 2,
+		"2-5": 3, "5-10": 4, "10+": 5,
+	}
+)
+
+// sortBuckets sorts distribution buckets by their defined order.
+func sortBuckets(
+	buckets []DistributionBucket,
+	order map[string]int,
+) {
+	sort.Slice(buckets, func(i, j int) bool {
+		return order[buckets[i].Label] < order[buckets[j].Label]
+	})
+}
+
+// mapToBuckets converts a label→count map to sorted buckets.
+func mapToBuckets(
+	m map[string]int, order map[string]int,
+) []DistributionBucket {
+	buckets := make([]DistributionBucket, 0, len(m))
+	for label, count := range m {
+		buckets = append(buckets, DistributionBucket{
+			Label: label, Count: count,
+		})
+	}
+	sortBuckets(buckets, order)
+	return buckets
+}
+
+// GetAnalyticsSessionShape returns distribution histograms for
+// session length, duration, and autonomy ratio.
+func (db *DB) GetAnalyticsSessionShape(
+	ctx context.Context, f AnalyticsFilter,
+) (SessionShapeResponse, error) {
+	loc := f.location()
+	dateCol := "COALESCE(started_at, created_at)"
+	where, args := f.buildWhere(dateCol)
+
+	query := `SELECT ` + dateCol + `, started_at, ended_at,
+		message_count, id FROM sessions WHERE ` + where
+
+	rows, err := db.reader.QueryContext(ctx, query, args...)
+	if err != nil {
+		return SessionShapeResponse{},
+			fmt.Errorf("querying session shape: %w", err)
+	}
+	defer rows.Close()
+
+	type sessInfo struct {
+		id string
+		mc int
+	}
+
+	lengthCounts := make(map[string]int)
+	durationCounts := make(map[string]int)
+	var sessionIDs []string
+	var filteredSessions []sessInfo
+	totalCount := 0
+
+	for rows.Next() {
+		var ts string
+		var startedAt, endedAt *string
+		var mc int
+		var id string
+		if err := rows.Scan(
+			&ts, &startedAt, &endedAt, &mc, &id,
+		); err != nil {
+			return SessionShapeResponse{},
+				fmt.Errorf("scanning session shape row: %w", err)
+		}
+		date := localDate(ts, loc)
+		if !inDateRange(date, f.From, f.To) {
+			continue
+		}
+
+		totalCount++
+		lengthCounts[lengthBucket(mc)]++
+		sessionIDs = append(sessionIDs, id)
+		filteredSessions = append(filteredSessions,
+			sessInfo{id: id, mc: mc})
+
+		if startedAt != nil && endedAt != nil &&
+			*startedAt != "" && *endedAt != "" {
+			tStart, okS := localTime(*startedAt, loc)
+			tEnd, okE := localTime(*endedAt, loc)
+			if okS && okE {
+				mins := tEnd.Sub(tStart).Minutes()
+				if mins >= 0 {
+					durationCounts[durationBucket(mins)]++
+				}
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return SessionShapeResponse{},
+			fmt.Errorf("iterating session shape rows: %w", err)
+	}
+
+	// Query autonomy data for filtered sessions
+	autonomyCounts := make(map[string]int)
+	if len(sessionIDs) > 0 {
+		placeholders := make([]string, len(sessionIDs))
+		autoArgs := make([]any, len(sessionIDs))
+		for i, id := range sessionIDs {
+			placeholders[i] = "?"
+			autoArgs[i] = id
+		}
+		autoQuery := `SELECT session_id,
+			SUM(CASE WHEN role='user' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN role='assistant'
+				AND has_tool_use=1 THEN 1 ELSE 0 END)
+			FROM messages
+			WHERE session_id IN (` +
+			strings.Join(placeholders, ",") + `)
+			GROUP BY session_id`
+
+		autoRows, err := db.reader.QueryContext(
+			ctx, autoQuery, autoArgs...,
+		)
+		if err != nil {
+			return SessionShapeResponse{},
+				fmt.Errorf("querying autonomy: %w", err)
+		}
+		defer autoRows.Close()
+
+		for autoRows.Next() {
+			var sid string
+			var userCount, toolCount int
+			if err := autoRows.Scan(
+				&sid, &userCount, &toolCount,
+			); err != nil {
+				return SessionShapeResponse{},
+					fmt.Errorf("scanning autonomy row: %w", err)
+			}
+			if userCount > 0 {
+				ratio := float64(toolCount) / float64(userCount)
+				autonomyCounts[autonomyBucket(ratio)]++
+			}
+		}
+		if err := autoRows.Err(); err != nil {
+			return SessionShapeResponse{},
+				fmt.Errorf(
+					"iterating autonomy rows: %w", err,
+				)
+		}
+	}
+
+	return SessionShapeResponse{
+		Count:                totalCount,
+		LengthDistribution:   mapToBuckets(lengthCounts, lengthOrder),
+		DurationDistribution: mapToBuckets(durationCounts, durationOrder),
+		AutonomyDistribution: mapToBuckets(autonomyCounts, autonomyOrder),
+	}, nil
+}
+
+// --- Velocity ---
+
+// Percentiles holds p50 and p90 values.
+type Percentiles struct {
+	P50 float64 `json:"p50"`
+	P90 float64 `json:"p90"`
+}
+
+// VelocityOverview holds aggregate velocity metrics.
+type VelocityOverview struct {
+	TurnCycleSec      Percentiles `json:"turn_cycle_sec"`
+	FirstResponseSec  Percentiles `json:"first_response_sec"`
+	MsgsPerActiveMin  float64     `json:"msgs_per_active_min"`
+	CharsPerActiveMin float64     `json:"chars_per_active_min"`
+}
+
+// VelocityBreakdown is velocity metrics for a subgroup.
+type VelocityBreakdown struct {
+	Label    string           `json:"label"`
+	Sessions int              `json:"sessions"`
+	Overview VelocityOverview `json:"overview"`
+}
+
+// VelocityResponse wraps overall and grouped velocity metrics.
+type VelocityResponse struct {
+	Overall      VelocityOverview    `json:"overall"`
+	ByAgent      []VelocityBreakdown `json:"by_agent"`
+	ByComplexity []VelocityBreakdown `json:"by_complexity"`
+}
+
+// complexityBucket returns the complexity label based on
+// message count.
+func complexityBucket(mc int) string {
+	switch {
+	case mc <= 15:
+		return "1-15"
+	case mc <= 60:
+		return "16-60"
+	default:
+		return "61+"
+	}
+}
+
+// velocityAccumulator collects raw values for a velocity group.
+type velocityAccumulator struct {
+	turnCycles     []float64
+	firstResponses []float64
+	totalMsgs      int
+	totalChars     int
+	activeMinutes  float64
+	sessions       int
+}
+
+func (a *velocityAccumulator) computeOverview() VelocityOverview {
+	sort.Float64s(a.turnCycles)
+	sort.Float64s(a.firstResponses)
+
+	var v VelocityOverview
+	v.TurnCycleSec = Percentiles{
+		P50: math.Round(
+			percentileFloat(a.turnCycles, 0.5)*10) / 10,
+		P90: math.Round(
+			percentileFloat(a.turnCycles, 0.9)*10) / 10,
+	}
+	v.FirstResponseSec = Percentiles{
+		P50: math.Round(
+			percentileFloat(a.firstResponses, 0.5)*10) / 10,
+		P90: math.Round(
+			percentileFloat(a.firstResponses, 0.9)*10) / 10,
+	}
+	if a.activeMinutes > 0 {
+		v.MsgsPerActiveMin = math.Round(
+			float64(a.totalMsgs)/a.activeMinutes*10) / 10
+		v.CharsPerActiveMin = math.Round(
+			float64(a.totalChars)/a.activeMinutes*10) / 10
+	}
+	return v
+}
+
+// GetAnalyticsVelocity computes turn cycle, first response, and
+// throughput metrics with breakdowns by agent and complexity.
+func (db *DB) GetAnalyticsVelocity(
+	ctx context.Context, f AnalyticsFilter,
+) (VelocityResponse, error) {
+	loc := f.location()
+	dateCol := "COALESCE(started_at, created_at)"
+	where, args := f.buildWhere(dateCol)
+
+	// Phase 1: Get filtered session metadata
+	sessQuery := `SELECT id, ` + dateCol + `, agent,
+		message_count FROM sessions WHERE ` + where
+
+	sessRows, err := db.reader.QueryContext(
+		ctx, sessQuery, args...,
+	)
+	if err != nil {
+		return VelocityResponse{},
+			fmt.Errorf("querying velocity sessions: %w", err)
+	}
+	defer sessRows.Close()
+
+	type sessInfo struct {
+		agent string
+		mc    int
+	}
+	sessionMap := make(map[string]sessInfo)
+	var sessionIDs []string
+
+	for sessRows.Next() {
+		var id, ts, agent string
+		var mc int
+		if err := sessRows.Scan(
+			&id, &ts, &agent, &mc,
+		); err != nil {
+			return VelocityResponse{},
+				fmt.Errorf("scanning velocity session: %w", err)
+		}
+		date := localDate(ts, loc)
+		if !inDateRange(date, f.From, f.To) {
+			continue
+		}
+		sessionMap[id] = sessInfo{agent: agent, mc: mc}
+		sessionIDs = append(sessionIDs, id)
+	}
+	if err := sessRows.Err(); err != nil {
+		return VelocityResponse{},
+			fmt.Errorf("iterating velocity sessions: %w", err)
+	}
+
+	if len(sessionIDs) == 0 {
+		return VelocityResponse{
+			ByAgent:      []VelocityBreakdown{},
+			ByComplexity: []VelocityBreakdown{},
+		}, nil
+	}
+
+	// Phase 2: Fetch messages for filtered sessions
+	placeholders := make([]string, len(sessionIDs))
+	msgArgs := make([]any, len(sessionIDs))
+	for i, id := range sessionIDs {
+		placeholders[i] = "?"
+		msgArgs[i] = id
+	}
+	msgQuery := `SELECT session_id, ordinal, role,
+		timestamp, content_length
+		FROM messages
+		WHERE session_id IN (` +
+		strings.Join(placeholders, ",") + `)
+		ORDER BY session_id, ordinal`
+
+	msgRows, err := db.reader.QueryContext(
+		ctx, msgQuery, msgArgs...,
+	)
+	if err != nil {
+		return VelocityResponse{},
+			fmt.Errorf("querying velocity messages: %w", err)
+	}
+	defer msgRows.Close()
+
+	type msgInfo struct {
+		role          string
+		ts            time.Time
+		valid         bool
+		contentLength int
+	}
+
+	// Group messages by session
+	sessionMsgs := make(map[string][]msgInfo)
+	for msgRows.Next() {
+		var sid string
+		var ordinal int
+		var role, ts string
+		var cl int
+		if err := msgRows.Scan(
+			&sid, &ordinal, &role, &ts, &cl,
+		); err != nil {
+			return VelocityResponse{},
+				fmt.Errorf("scanning velocity msg: %w", err)
+		}
+		t, ok := localTime(ts, loc)
+		sessionMsgs[sid] = append(sessionMsgs[sid], msgInfo{
+			role: role, ts: t, valid: ok,
+			contentLength: cl,
+		})
+	}
+	if err := msgRows.Err(); err != nil {
+		return VelocityResponse{},
+			fmt.Errorf("iterating velocity msgs: %w", err)
+	}
+
+	// Process per-session metrics
+	overall := &velocityAccumulator{}
+	byAgent := make(map[string]*velocityAccumulator)
+	byComplexity := make(map[string]*velocityAccumulator)
+
+	const maxCycleSec = 1800.0
+	const maxGapSec = 300.0
+
+	for _, sid := range sessionIDs {
+		info := sessionMap[sid]
+		msgs := sessionMsgs[sid]
+		if len(msgs) < 2 {
+			continue
+		}
+
+		agentKey := info.agent
+		compKey := complexityBucket(info.mc)
+
+		if byAgent[agentKey] == nil {
+			byAgent[agentKey] = &velocityAccumulator{}
+		}
+		if byComplexity[compKey] == nil {
+			byComplexity[compKey] = &velocityAccumulator{}
+		}
+
+		accums := []*velocityAccumulator{
+			overall, byAgent[agentKey], byComplexity[compKey],
+		}
+
+		for _, a := range accums {
+			a.sessions++
+		}
+
+		// Turn cycles: user→assistant transitions
+		for i := 1; i < len(msgs); i++ {
+			prev := msgs[i-1]
+			cur := msgs[i]
+			if !prev.valid || !cur.valid {
+				continue
+			}
+			if prev.role == "user" && cur.role == "assistant" {
+				delta := cur.ts.Sub(prev.ts).Seconds()
+				if delta > 0 && delta <= maxCycleSec {
+					for _, a := range accums {
+						a.turnCycles = append(
+							a.turnCycles, delta,
+						)
+					}
+				}
+			}
+		}
+
+		// First response: first user → first assistant
+		var firstUser, firstAsst *msgInfo
+		for i := range msgs {
+			if msgs[i].role == "user" && msgs[i].valid &&
+				firstUser == nil {
+				firstUser = &msgs[i]
+			}
+			if msgs[i].role == "assistant" && msgs[i].valid &&
+				firstAsst == nil {
+				firstAsst = &msgs[i]
+			}
+			if firstUser != nil && firstAsst != nil {
+				break
+			}
+		}
+		if firstUser != nil && firstAsst != nil {
+			delta := firstAsst.ts.Sub(firstUser.ts).Seconds()
+			if delta > 0 {
+				for _, a := range accums {
+					a.firstResponses = append(
+						a.firstResponses, delta,
+					)
+				}
+			}
+		}
+
+		// Active minutes and throughput
+		activeSec := 0.0
+		asstChars := 0
+		for i, m := range msgs {
+			if m.role == "assistant" {
+				asstChars += m.contentLength
+			}
+			if i > 0 && msgs[i-1].valid && m.valid {
+				gap := m.ts.Sub(msgs[i-1].ts).Seconds()
+				if gap > 0 {
+					if gap > maxGapSec {
+						gap = maxGapSec
+					}
+					activeSec += gap
+				}
+			}
+		}
+		activeMins := activeSec / 60.0
+		if activeMins > 0 {
+			for _, a := range accums {
+				a.totalMsgs += len(msgs)
+				a.totalChars += asstChars
+				a.activeMinutes += activeMins
+			}
+		}
+	}
+
+	resp := VelocityResponse{
+		Overall: overall.computeOverview(),
+	}
+
+	// Build by-agent breakdowns
+	agentKeys := make([]string, 0, len(byAgent))
+	for k := range byAgent {
+		agentKeys = append(agentKeys, k)
+	}
+	sort.Strings(agentKeys)
+	resp.ByAgent = make([]VelocityBreakdown, 0, len(agentKeys))
+	for _, k := range agentKeys {
+		a := byAgent[k]
+		resp.ByAgent = append(resp.ByAgent, VelocityBreakdown{
+			Label:    k,
+			Sessions: a.sessions,
+			Overview: a.computeOverview(),
+		})
+	}
+
+	// Build by-complexity breakdowns
+	compOrder := map[string]int{
+		"1-15": 0, "16-60": 1, "61+": 2,
+	}
+	compKeys := make([]string, 0, len(byComplexity))
+	for k := range byComplexity {
+		compKeys = append(compKeys, k)
+	}
+	sort.Slice(compKeys, func(i, j int) bool {
+		return compOrder[compKeys[i]] < compOrder[compKeys[j]]
+	})
+	resp.ByComplexity = make(
+		[]VelocityBreakdown, 0, len(compKeys),
+	)
+	for _, k := range compKeys {
+		a := byComplexity[k]
+		resp.ByComplexity = append(resp.ByComplexity,
+			VelocityBreakdown{
+				Label:    k,
+				Sessions: a.sessions,
+				Overview: a.computeOverview(),
+			})
+	}
+
+	return resp, nil
 }

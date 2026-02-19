@@ -200,3 +200,49 @@ export interface ProjectAnalytics {
 export interface ProjectsAnalyticsResponse {
   projects: ProjectAnalytics[];
 }
+
+export interface HourOfWeekCell {
+  day_of_week: number;
+  hour: number;
+  messages: number;
+}
+
+export interface HourOfWeekResponse {
+  cells: HourOfWeekCell[];
+}
+
+export interface DistributionBucket {
+  label: string;
+  count: number;
+}
+
+export interface SessionShapeResponse {
+  count: number;
+  length_distribution: DistributionBucket[];
+  duration_distribution: DistributionBucket[];
+  autonomy_distribution: DistributionBucket[];
+}
+
+export interface Percentiles {
+  p50: number;
+  p90: number;
+}
+
+export interface VelocityOverview {
+  turn_cycle_sec: Percentiles;
+  first_response_sec: Percentiles;
+  msgs_per_active_min: number;
+  chars_per_active_min: number;
+}
+
+export interface VelocityBreakdown {
+  label: string;
+  sessions: number;
+  overview: VelocityOverview;
+}
+
+export interface VelocityResponse {
+  overall: VelocityOverview;
+  by_agent: VelocityBreakdown[];
+  by_complexity: VelocityBreakdown[];
+}
