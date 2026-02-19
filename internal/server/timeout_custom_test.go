@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,20 +36,7 @@ func TestWithTimeout_Timeout(t *testing.T) {
 	resp := w.Result()
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("expected 503 Service Unavailable, got %d", resp.StatusCode)
-	}
-
-	assertContentType(t, w, "application/json")
-
-	body, _ := io.ReadAll(resp.Body)
-	var errResp jsonError
-	if err := json.Unmarshal(body, &errResp); err != nil {
-		t.Errorf("expected JSON body, got error %v: %s", err, string(body))
-	}
-	if errResp.Error != "request timed out" {
-		t.Errorf("expected error message 'request timed out', got %q", errResp.Error)
-	}
+	assertTimeoutResponse(t, resp)
 }
 
 func TestWithTimeout_Success(t *testing.T) {

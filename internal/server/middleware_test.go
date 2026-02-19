@@ -1,17 +1,11 @@
 package server
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/sync"
 )
 
 // TestContentTypeWrapper verifies that Content-Type is only set if missing
@@ -110,23 +104,7 @@ func TestContentTypeWrapper(t *testing.T) {
 func TestWithTimeoutTriggersOnSlowHandler(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	defer database.Close()
-
-	cfg := config.Config{
-		Host:         "127.0.0.1",
-		Port:         0,
-		DataDir:      dir,
-		DBPath:       dbPath,
-		WriteTimeout: 10 * time.Millisecond,
-	}
-	engine := sync.NewEngine(database, dir, "", "test")
-	srv := New(cfg, database, engine)
+	srv := testServer(t, 10*time.Millisecond)
 
 	// Handler that blocks well past the timeout.
 	slow := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -148,21 +126,7 @@ func TestWithTimeoutTriggersOnSlowHandler(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	var jsonErr jsonError
-	if err := json.Unmarshal(body, &jsonErr); err != nil {
-		t.Fatalf("body is not valid JSON: %v (body=%q)", err, string(body))
-	}
-	if jsonErr.Error != "request timed out" {
-		t.Errorf("error = %q, want %q", jsonErr.Error, "request timed out")
-	}
-	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
-	}
+	assertTimeoutResponse(t, resp)
 }
 
 // TestRoutesTimeoutWiring verifies that API routes are wrapped with timeout
@@ -171,41 +135,12 @@ func TestWithTimeoutTriggersOnSlowHandler(t *testing.T) {
 func TestRoutesTimeoutWiring(t *testing.T) {
 	t.Parallel()
 
-	isTimeoutResponse := func(t *testing.T, resp *http.Response) bool {
-		t.Helper()
-		if resp.StatusCode != http.StatusServiceUnavailable {
-			return false
-		}
-		body, _ := io.ReadAll(resp.Body)
-		var je jsonError
-		if json.Unmarshal(body, &je) != nil {
-			return false
-		}
-		return je.Error == "request timed out"
-	}
-
 	// Positive: wrapped routes must produce a timeout with an
 	// impossibly short deadline (1 ns). Any real handler (DB query,
 	// serialization, etc.) will exceed this.
 	t.Run("WrappedRoutesTimeout", func(t *testing.T) {
 		t.Parallel()
-		dir := t.TempDir()
-		dbPath := filepath.Join(dir, "test.db")
-		database, err := db.Open(dbPath)
-		if err != nil {
-			t.Fatalf("opening db: %v", err)
-		}
-		defer database.Close()
-
-		cfg := config.Config{
-			Host:         "127.0.0.1",
-			Port:         0,
-			DataDir:      dir,
-			DBPath:       dbPath,
-			WriteTimeout: time.Nanosecond,
-		}
-		engine := sync.NewEngine(database, dir, "", "test")
-		srv := New(cfg, database, engine)
+		srv := testServer(t, time.Nanosecond)
 
 		ts := httptest.NewServer(srv.Handler())
 		defer ts.Close()
@@ -240,23 +175,7 @@ func TestRoutesTimeoutWiring(t *testing.T) {
 	// even with the same short deadline.
 	t.Run("UnwrappedRoutesNoTimeout", func(t *testing.T) {
 		t.Parallel()
-		dir := t.TempDir()
-		dbPath := filepath.Join(dir, "test.db")
-		database, err := db.Open(dbPath)
-		if err != nil {
-			t.Fatalf("opening db: %v", err)
-		}
-		defer database.Close()
-
-		cfg := config.Config{
-			Host:         "127.0.0.1",
-			Port:         0,
-			DataDir:      dir,
-			DBPath:       dbPath,
-			WriteTimeout: time.Nanosecond,
-		}
-		engine := sync.NewEngine(database, dir, "", "test")
-		srv := New(cfg, database, engine)
+		srv := testServer(t, time.Nanosecond)
 
 		ts := httptest.NewServer(srv.Handler())
 		defer ts.Close()
