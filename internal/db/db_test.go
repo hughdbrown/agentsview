@@ -14,6 +14,60 @@ import (
 	"testing"
 )
 
+// filterWith returns a SessionFilter with Limit defaulted to 100.
+func filterWith(fn func(*SessionFilter)) SessionFilter {
+	f := SessionFilter{Limit: 100}
+	fn(&f)
+	return f
+}
+
+// sessionSet inserts 3 sessions with sequential dates and
+// increasing message counts (5, 15, 25).
+func sessionSet(t *testing.T, d *DB) {
+	t.Helper()
+	for i, mc := range []int{5, 15, 25} {
+		day := fmt.Sprintf("2024-06-0%dT10:00:00Z", i+1)
+		end := fmt.Sprintf("2024-06-0%dT11:00:00Z", i+1)
+		insertSession(t, d, fmt.Sprintf("s%d", i+1),
+			"proj", func(s *Session) {
+				s.StartedAt = Ptr(day)
+				s.EndedAt = Ptr(end)
+				s.MessageCount = mc
+			})
+	}
+}
+
+// requireCount lists sessions with filter and asserts the count.
+func requireCount(
+	t *testing.T, d *DB, f SessionFilter, want int,
+) {
+	t.Helper()
+	page, err := d.ListSessions(
+		context.Background(), f,
+	)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if got := len(page.Sessions); got != want {
+		t.Errorf("got %d sessions, want %d", got, want)
+	}
+}
+
+// requireErrContains fails if err is nil or doesn't contain
+// substr.
+func requireErrContains(
+	t *testing.T, err error, substr string,
+) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), substr) {
+		t.Errorf("error %q does not contain %q",
+			err.Error(), substr)
+	}
+}
+
 const (
 	defaultMachine = "local"
 	defaultAgent   = "claude"
@@ -229,15 +283,11 @@ func TestListSessions(t *testing.T) {
 		)
 	}
 
-	page, err := d.ListSessions(context.Background(), SessionFilter{Limit: 10})
-	if err != nil {
-		t.Fatalf("ListSessions: %v", err)
-	}
-	if len(page.Sessions) != 5 {
-		t.Errorf("got %d sessions, want 5", len(page.Sessions))
-	}
+	requireCount(t, d, SessionFilter{Limit: 10}, 5)
 
-	page, err = d.ListSessions(context.Background(), SessionFilter{Limit: 2})
+	page, err := d.ListSessions(
+		context.Background(), SessionFilter{Limit: 2},
+	)
 	if err != nil {
 		t.Fatalf("ListSessions limit: %v", err)
 	}
@@ -248,16 +298,10 @@ func TestListSessions(t *testing.T) {
 		t.Error("expected next cursor")
 	}
 
-	page2, err := d.ListSessions(context.Background(), SessionFilter{
+	requireCount(t, d, SessionFilter{
 		Limit:  10,
 		Cursor: page.NextCursor,
-	})
-	if err != nil {
-		t.Fatalf("ListSessions cursor: %v", err)
-	}
-	if len(page2.Sessions) != 3 {
-		t.Errorf("got %d sessions, want 3", len(page2.Sessions))
-	}
+	}, 3)
 }
 
 func TestListSessionsProjectFilter(t *testing.T) {
@@ -271,12 +315,9 @@ func TestListSessionsProjectFilter(t *testing.T) {
 		)
 	}
 
-	page, _ := d.ListSessions(context.Background(), SessionFilter{
-		Project: "proj_a", Limit: 10,
-	})
-	if len(page.Sessions) != 2 {
-		t.Errorf("got %d sessions, want 2", len(page.Sessions))
-	}
+	requireCount(t, d, filterWith(func(f *SessionFilter) {
+		f.Project = "proj_a"
+	}), 2)
 }
 
 func TestMessageCRUD(t *testing.T) {
