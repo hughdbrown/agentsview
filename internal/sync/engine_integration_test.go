@@ -44,14 +44,7 @@ func (e *testEnv) writeSession(
 ) string {
 	t.Helper()
 	path := filepath.Join(baseDir, relPath)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	if err := os.WriteFile(
-		path, []byte(content), 0o644,
-	); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	dbtest.WriteTestFile(t, path, []byte(content))
 	return path
 }
 

@@ -97,16 +97,12 @@ func setup(t *testing.T, opts ...setupOption) *testEnv {
 	}
 }
 
-func (te *testEnv) writeProjectFile(t *testing.T, project, filename, content string) string {
+func (te *testEnv) writeProjectFile(
+	t *testing.T, project, filename, content string,
+) string {
 	t.Helper()
-	projDir := filepath.Join(te.claudeDir, project)
-	if err := os.MkdirAll(projDir, 0o755); err != nil {
-		t.Fatalf("creating project dir: %v", err)
-	}
-	path := filepath.Join(projDir, filename)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("writing file %s: %v", filename, err)
-	}
+	path := filepath.Join(te.claudeDir, project, filename)
+	dbtest.WriteTestFile(t, path, []byte(content))
 	return path
 }
 

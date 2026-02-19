@@ -1,31 +1,25 @@
 package sync
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/wesm/agentsview/internal/dbtest"
 	"github.com/wesm/agentsview/internal/parser"
 )
 
-// createTestFile creates a file at path with minimal content,
-// creating parent directories as needed.
-func createTestFile(t *testing.T, path string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// setupTestDir creates a temporary directory and populates it with the given relative file paths.
-func setupTestDir(t *testing.T, relativePaths []string) string {
+// setupTestDir creates a temporary directory and populates
+// it with the given relative file paths (each containing
+// "{}").
+func setupTestDir(
+	t *testing.T, relativePaths []string,
+) string {
 	t.Helper()
 	dir := t.TempDir()
 	for _, p := range relativePaths {
-		createTestFile(t, filepath.Join(dir, p))
+		dbtest.WriteTestFile(
+			t, filepath.Join(dir, p), []byte("{}"),
+		)
 	}
 	return dir
 }
