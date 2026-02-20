@@ -15,7 +15,9 @@ function gitCommit(): string {
 export default defineConfig({
   plugins: [svelte()],
   define: {
-    __BUILD_COMMIT__: JSON.stringify(gitCommit()),
+    "import.meta.env.VITE_BUILD_COMMIT": JSON.stringify(
+      gitCommit(),
+    ),
   },
   resolve: {
     conditions: ["browser"],

@@ -32,7 +32,8 @@ class SyncStore {
   stats: Stats | null = $state(null);
   serverVersion: VersionInfo | null = $state(null);
   versionMismatch: boolean = $state(false);
-  readonly buildCommit: string = __BUILD_COMMIT__;
+  readonly buildCommit: string =
+    import.meta.env.VITE_BUILD_COMMIT;
 
   private watchEventSource: EventSource | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null =
