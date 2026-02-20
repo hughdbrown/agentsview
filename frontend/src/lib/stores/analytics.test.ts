@@ -133,14 +133,24 @@ function resetStore() {
 // Assert the most recent call to a mocked API function used
 // the expected from/to params. Uses lastCall so it reads the
 // right invocation even if the mock was called multiple times.
+type ParamFn = (params: {
+  from?: string;
+  to?: string;
+}) => Promise<unknown>;
+
 function assertParams(
-  fn: ReturnType<typeof vi.fn>,
+  fn: ParamFn,
   from: string,
   to: string,
 ) {
   const mock = vi.mocked(fn);
   expect(mock).toHaveBeenCalled();
-  const params = mock.mock.lastCall![0];
+  const call = mock.mock.lastCall;
+  expect(call).toBeDefined();
+  const params = call?.[0];
+  if (!params) {
+    throw new Error("expected analytics params call");
+  }
   expect(params.from).toBe(from);
   expect(params.to).toBe(to);
 }

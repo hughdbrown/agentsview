@@ -108,6 +108,33 @@ class SessionsStore {
     }
   }
 
+  /**
+   * Load additional pages until the target index is backed by
+   * loaded sessions, or until we hit maxPages / end-of-list.
+   * Keeps scrollbar jumps from showing placeholders for too long.
+   */
+  async loadMoreUntil(
+    targetIndex: number,
+    maxPages: number = 5,
+  ) {
+    if (targetIndex < 0) return;
+    let pages = 0;
+    while (
+      this.nextCursor &&
+      !this.loading &&
+      this.sessions.length <= targetIndex &&
+      pages < maxPages
+    ) {
+      const before = this.sessions.length;
+      await this.loadMore();
+      pages++;
+      if (this.sessions.length <= before) {
+        // Defensive: stop if no forward progress.
+        break;
+      }
+    }
+  }
+
   async loadProjects() {
     if (this.projectsLoaded) return;
     if (this.projectsPromise) return this.projectsPromise;

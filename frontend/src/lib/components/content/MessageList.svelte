@@ -69,12 +69,16 @@
   /** Svelte action: measure element for variable-height virtualizer */
   function measureElement(
     node: HTMLElement,
-    virt: Virtualizer<HTMLElement, HTMLElement>,
+    virt: Virtualizer<HTMLElement, HTMLElement> | undefined,
   ) {
-    virt.measureElement(node);
+    virt?.measureElement(node);
     return {
-      update(nextVirt: Virtualizer<HTMLElement, HTMLElement>) {
-        nextVirt.measureElement(node);
+      update(
+        nextVirt:
+          | Virtualizer<HTMLElement, HTMLElement>
+          | undefined,
+      ) {
+        nextVirt?.measureElement(node);
       },
       destroy() {
         // Cleanup handled by virtualizer

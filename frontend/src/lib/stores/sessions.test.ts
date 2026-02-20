@@ -7,6 +7,7 @@ import {
 } from "vitest";
 import { sessions } from "./sessions.svelte.js";
 import * as api from "../api/client.js";
+import type { ListSessionsParams } from "../api/client.js";
 
 vi.mock("../api/client.js", () => ({
   listSessions: vi.fn(),
@@ -40,6 +41,14 @@ function resetStore() {
   // Access via any to bypass TS visibility.
   (sessions as any).projectsLoaded = false;
   (sessions as any).projectsPromise = null;
+}
+
+function getLastListSessionsParams(): ListSessionsParams {
+  const call = vi.mocked(api.listSessions).mock.lastCall;
+  expect(call).toBeDefined();
+  const params = call?.[0];
+  expect(params).toBeDefined();
+  return params!;
 }
 
 describe("SessionsStore.initFromParams", () => {
@@ -107,42 +116,41 @@ describe("SessionsStore.load serialization", () => {
     sessions.maxMessagesFilter = 0;
     await sessions.load();
 
-    const call = vi.mocked(api.listSessions).mock.lastCall;
-    expect(call).toBeDefined();
-    expect(call![0].min_messages).toBeUndefined();
-    expect(call![0].max_messages).toBeUndefined();
+    const params = getLastListSessionsParams();
+    expect(params.min_messages).toBeUndefined();
+    expect(params.max_messages).toBeUndefined();
   });
 
   it("should include positive min_messages", async () => {
     sessions.minMessagesFilter = 5;
     await sessions.load();
 
-    const call = vi.mocked(api.listSessions).mock.lastCall;
-    expect(call![0].min_messages).toBe(5);
+    const params = getLastListSessionsParams();
+    expect(params.min_messages).toBe(5);
   });
 
   it("should include positive max_messages", async () => {
     sessions.maxMessagesFilter = 100;
     await sessions.load();
 
-    const call = vi.mocked(api.listSessions).mock.lastCall;
-    expect(call![0].max_messages).toBe(100);
+    const params = getLastListSessionsParams();
+    expect(params.max_messages).toBe(100);
   });
 
   it("should pass project filter when set", async () => {
     sessions.projectFilter = "myproj";
     await sessions.load();
 
-    const call = vi.mocked(api.listSessions).mock.lastCall;
-    expect(call![0].project).toBe("myproj");
+    const params = getLastListSessionsParams();
+    expect(params.project).toBe("myproj");
   });
 
   it("should omit project when empty", async () => {
     sessions.projectFilter = "";
     await sessions.load();
 
-    const call = vi.mocked(api.listSessions).mock.lastCall;
-    expect(call![0].project).toBeUndefined();
+    const params = getLastListSessionsParams();
+    expect(params.project).toBeUndefined();
   });
 });
 
@@ -162,11 +170,10 @@ describe("SessionsStore.loadMore serialization", () => {
     mockListSessions();
     await sessions.loadMore();
 
-    const call = vi.mocked(api.listSessions).mock.lastCall;
-    expect(call).toBeDefined();
-    expect(call![0].min_messages).toBe(10);
-    expect(call![0].max_messages).toBe(50);
-    expect(call![0].cursor).toBe("cur1");
+    const params = getLastListSessionsParams();
+    expect(params.min_messages).toBe(10);
+    expect(params.max_messages).toBe(50);
+    expect(params.cursor).toBe("cur1");
   });
 
   it("should omit min/max when 0 in loadMore", async () => {
@@ -177,9 +184,9 @@ describe("SessionsStore.loadMore serialization", () => {
     mockListSessions();
     await sessions.loadMore();
 
-    const call = vi.mocked(api.listSessions).mock.lastCall;
-    expect(call![0].min_messages).toBeUndefined();
-    expect(call![0].max_messages).toBeUndefined();
+    const params = getLastListSessionsParams();
+    expect(params.min_messages).toBeUndefined();
+    expect(params.max_messages).toBeUndefined();
   });
 });
 

@@ -21,6 +21,10 @@ vi.mock('@tanstack/virtual-core', async () => {
       createdInstances.push(this);
     }
 
+    setOptions(opts: any) {
+      this.options = opts;
+    }
+
     _willUpdate() {}
   }
 
@@ -74,12 +78,12 @@ describe('createVirtualizer cache invalidation', () => {
         controller.updateOptions({ measureCacheKey: 'session-1', count: 20 });
         await tick();
 
-        expect(createdInstances).toHaveLength(2);
-        const secondInstance = createdInstances[1];
-        
-        expect(secondInstance.itemSizeCache).toBeDefined();
-        expect(secondInstance.itemSizeCache.get('0')).toBe(50);
-        expect(secondInstance.itemSizeCache.get('1')).toBe(60);
+        expect(createdInstances).toHaveLength(1);
+        const sameInstance = createdInstances[0];
+        expect(sameInstance.options.count).toBe(20);
+        expect(sameInstance.itemSizeCache).toBeDefined();
+        expect(sameInstance.itemSizeCache.get('0')).toBe(50);
+        expect(sameInstance.itemSizeCache.get('1')).toBe(60);
 
         unmount(component);
       });
@@ -112,14 +116,11 @@ describe('createVirtualizer cache invalidation', () => {
         controller.updateOptions({ measureCacheKey: 'session-2', count: 10 });
         await tick();
 
-        expect(createdInstances).toHaveLength(2);
-        const secondInstance = createdInstances[1];
-        
-        // Should be cleared (or undefined if not set at all)
-        // logic says: if savedCache.size > 0, setSizeCache(v, savedCache)
-        // if savedCache is empty, setSizeCache is NOT called.
-        // So itemSizeCache on new instance will be undefined (as per mock initialization)
-        expect(secondInstance.itemSizeCache).toBeUndefined();
+        expect(createdInstances).toHaveLength(1);
+        const sameInstance = createdInstances[0];
+        expect(sameInstance.options.count).toBe(10);
+        expect(sameInstance.itemSizeCache).toBeDefined();
+        expect(sameInstance.itemSizeCache.size).toBe(0);
 
         unmount(component);
       });

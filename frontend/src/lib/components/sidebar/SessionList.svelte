@@ -86,8 +86,9 @@
     if (!sessions.nextCursor) return;
     if (endIndex < loaded - LOAD_AHEAD) return;
 
+    const targetIndex = endIndex + LOAD_AHEAD;
     untrack(() => {
-      void sessions.loadMore();
+      void sessions.loadMoreUntil(targetIndex);
     });
   });
 
@@ -99,6 +100,25 @@
       scrollRaf = null;
       if (!containerRef) return;
       scrollTop = containerRef.scrollTop;
+
+      const loaded = sessions.sessions.length;
+      if (loaded === 0) return;
+      if (sessions.loading) return;
+      if (!sessions.nextCursor) return;
+
+      const visibleCount = Math.ceil(
+        containerRef.clientHeight / ITEM_HEIGHT,
+      );
+      const targetIndex =
+        Math.floor(containerRef.scrollTop / ITEM_HEIGHT) +
+        visibleCount +
+        OVERSCAN * 2 +
+        LOAD_AHEAD;
+      if (targetIndex < loaded - LOAD_AHEAD) return;
+
+      untrack(() => {
+        void sessions.loadMoreUntil(targetIndex);
+      });
     });
   }
 

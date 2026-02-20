@@ -15,15 +15,6 @@ class MessagesStore {
   private reloadSessionId: string | null = null;
   private pendingReload: boolean = false;
 
-  // Non-reactive buffer for background-prefetched messages.
-  // Kept separate from the reactive `messages` array so that
-  // prefetching never triggers virtualizer churn. Merged into
-  // `messages` on demand (e.g. ensureOrdinalLoaded, loadOlder).
-  private prefetchBuffer: Message[] = [];
-  private prefetchDone: boolean = false;
-  private backgroundLoading: boolean = false;
-  private prefetchVersion: number = 0;
-
   async loadSession(id: string) {
     if (
       this.sessionId === id &&
@@ -40,10 +31,6 @@ class MessagesStore {
     this.reloadPromise = null;
     this.reloadSessionId = null;
     this.pendingReload = false;
-    this.prefetchBuffer = [];
-    this.prefetchDone = false;
-    this.backgroundLoading = false;
-    this.prefetchVersion++;
 
     try {
       await this.loadProgressively(id);
@@ -94,10 +81,6 @@ class MessagesStore {
     this.reloadPromise = null;
     this.reloadSessionId = null;
     this.pendingReload = false;
-    this.prefetchBuffer = [];
-    this.prefetchDone = false;
-    this.backgroundLoading = false;
-    this.prefetchVersion++;
   }
 
   private async loadProgressively(id: string) {
@@ -118,90 +101,6 @@ class MessagesStore {
     } else {
       this.hasOlder = false;
     }
-
-    if (this.hasOlder) {
-      this.prefetchInBackground(id).catch(() => {});
-    }
-  }
-
-  private cancelPrefetch() {
-    this.prefetchVersion++;
-    this.prefetchBuffer = [];
-    this.prefetchDone = false;
-    this.backgroundLoading = false;
-  }
-
-  /**
-   * Fetches all older messages into a non-reactive buffer.
-   * Does not touch the reactive `messages` array — no
-   * virtualizer churn, no scroll disruption.
-   */
-  private async prefetchInBackground(id: string) {
-    const version = this.prefetchVersion;
-    this.backgroundLoading = true;
-    this.prefetchDone = false;
-    try {
-      const oldest = this.messages[0]?.ordinal;
-      if (oldest === undefined || oldest <= 0) return;
-
-      this.prefetchBuffer = [];
-      let from = 0;
-      for (;;) {
-        if (
-          this.sessionId !== id ||
-          this.prefetchVersion !== version
-        ) return;
-        const res = await api.getMessages(id, {
-          from,
-          limit: BATCH_SIZE,
-          direction: "asc",
-        });
-        if (
-          this.sessionId !== id ||
-          this.prefetchVersion !== version
-        ) return;
-        if (res.messages.length === 0) break;
-
-        for (const m of res.messages) {
-          if (m.ordinal < oldest) {
-            this.prefetchBuffer.push(m);
-          }
-        }
-
-        if (res.messages.length < BATCH_SIZE) break;
-        const last = res.messages[res.messages.length - 1]!;
-        if (last.ordinal >= oldest - 1) break;
-        from = last.ordinal + 1;
-      }
-
-      if (
-        this.sessionId === id &&
-        this.prefetchVersion === version
-      ) {
-        this.prefetchDone = true;
-      }
-    } finally {
-      if (
-        this.sessionId === id &&
-        this.prefetchVersion === version
-      ) {
-        this.backgroundLoading = false;
-      }
-    }
-  }
-
-  /**
-   * Merges the prefetch buffer into the reactive messages
-   * array. Called on-demand when the user needs older
-   * messages (search jump, scroll to top). Single reactive
-   * update keeps virtualizer impact minimal.
-   */
-  private flushPrefetchBuffer() {
-    if (this.prefetchBuffer.length === 0) return;
-    const buf = this.prefetchBuffer;
-    this.prefetchBuffer = [];
-    this.messages = [...buf, ...this.messages];
-    this.hasOlder = false;
   }
 
   private async loadFrom(id: string, from: number) {
@@ -226,19 +125,6 @@ class MessagesStore {
   }
 
   async loadOlder() {
-    // If the prefetch buffer has data, flush it instead of
-    // making a network request.
-    if (this.prefetchDone && this.prefetchBuffer.length > 0) {
-      this.flushPrefetchBuffer();
-      return;
-    }
-
-    // Prioritize interactive requests (scroll/jump) over
-    // background prefetch.
-    if (this.backgroundLoading) {
-      this.cancelPrefetch();
-    }
-
     if (
       !this.sessionId ||
       this.loadingOlder ||
@@ -277,33 +163,63 @@ class MessagesStore {
   async ensureOrdinalLoaded(targetOrdinal: number) {
     if (!this.sessionId || this.messages.length === 0) return;
 
-    // Check if already in range.
-    const oldest = this.messages[0]!.ordinal;
-    if (oldest <= targetOrdinal) return;
+    const id = this.sessionId;
+    const oldestLoaded = this.messages[0]!.ordinal;
+    if (oldestLoaded <= targetOrdinal) return;
+    if (!this.hasOlder) return;
 
-    // If prefetch already has data, consume in one update.
-    if (this.prefetchDone && this.prefetchBuffer.length > 0) {
-      this.flushPrefetchBuffer();
-      return;
+    // If a scroll-triggered load is active, wait briefly for it
+    // to finish before issuing targeted fetches.
+    while (this.sessionId === id && this.loadingOlder) {
+      await new Promise((r) => setTimeout(r, 16));
     }
+    if (!this.sessionId || this.sessionId !== id) return;
+    if (this.messages.length === 0) return;
+    if (this.messages[0]!.ordinal <= targetOrdinal) return;
 
-    // Cancel background prefetch and load only what we need.
-    if (this.backgroundLoading) {
-      this.cancelPrefetch();
-    }
+    this.loadingOlder = true;
+    try {
+      let from = this.messages[0]!.ordinal - 1;
+      let lastOldest = this.messages[0]!.ordinal;
+      const chunks: Message[][] = [];
 
-    // Fallback: no prefetch running, load sequentially.
-    for (;;) {
-      if (
-        !this.sessionId ||
-        !this.hasOlder ||
-        this.messages.length === 0
-      ) return;
-      const cur = this.messages[0]!.ordinal;
-      if (cur <= targetOrdinal) return;
-      await this.loadOlder();
-      if (this.messages.length === 0) return;
-      if (this.messages[0]!.ordinal >= cur) return;
+      while (from >= 0) {
+        if (this.sessionId !== id) return;
+        const res = await api.getMessages(id, {
+          from,
+          limit: BATCH_SIZE,
+          direction: "desc",
+        });
+        if (this.sessionId !== id) return;
+        if (res.messages.length === 0) {
+          this.hasOlder = false;
+          break;
+        }
+
+        const chunk = [...res.messages].reverse();
+        chunks.push(chunk);
+        const chunkOldest = chunk[0]!.ordinal;
+
+        if (chunkOldest <= targetOrdinal) break;
+        if (chunkOldest >= lastOldest) break;
+
+        lastOldest = chunkOldest;
+        from = chunkOldest - 1;
+      }
+
+      if (this.sessionId !== id) return;
+
+      if (chunks.length > 0) {
+        const merged = chunks.reverse().flat();
+        this.messages = [...merged, ...this.messages];
+      }
+
+      const oldestNow = this.messages[0]?.ordinal;
+      this.hasOlder = oldestNow !== undefined && oldestNow > 0;
+    } finally {
+      if (this.sessionId === id) {
+        this.loadingOlder = false;
+      }
     }
   }
 

@@ -15,9 +15,15 @@ vi.mock('@tanstack/virtual-core', async () => {
   return {
     ...original,
     Virtualizer: class {
+      options: any;
       constructor(opts: any) {
+        this.options = opts;
         lastOptions.value = opts;
         lastInstance.value = this;
+      }
+      setOptions(opts: any) {
+        this.options = opts;
+        lastOptions.value = opts;
       }
       _willUpdate() {}
     },
@@ -70,16 +76,13 @@ describe('createVirtualizer reactivity', () => {
     const { onChange } = lastOptions.value;
     expect(typeof onChange).toBe('function');
 
-    // Capture the current instance (proxy) from the callback
-    const instanceProxy = onInstanceChange.mock.calls[0]![0];
-    
-    // Verify stability: multiple reads should return the same proxy reference
-    // when no changes have occurred.
-    expect(component.getVirtualizer().instance).toBe(instanceProxy);
-    expect(component.getVirtualizer().instance).toBe(instanceProxy);
+    // Capture the current instance from the callback.
+    const firstInstance = onInstanceChange.mock.calls[0]![0];
+    expect(component.getVirtualizer().instance).toBe(firstInstance);
     
     // Get the raw instance from our mock capture
     const rawInstance = lastInstance.value;
+    expect(rawInstance).toBe(firstInstance);
 
     // Mutate raw instance to verify we are working with the same object underneath
     rawInstance._test_mutation = 'updated';
@@ -95,9 +98,9 @@ describe('createVirtualizer reactivity', () => {
 
     expect(onInstanceChange).toHaveBeenCalledTimes(2);
     const receivedSync = onInstanceChange.mock.calls[1]![0];
-    expect(receivedSync).not.toBe(instanceProxy);
+    expect(receivedSync).toBe(rawInstance);
     expect(receivedSync._test_mutation).toBe('updated');
-    expect(component.getVirtualizer().instance).toBe(receivedSync);
+    expect(component.getVirtualizer().instance).toBe(rawInstance);
 
     // 2. Test async update (onChange(..., true))
     // This should trigger bumpVersion() (setTimeout)
@@ -113,7 +116,7 @@ describe('createVirtualizer reactivity', () => {
 
     expect(onInstanceChange).toHaveBeenCalledTimes(3);
     const receivedAsync = onInstanceChange.mock.calls[2]![0];
-    expect(receivedAsync).not.toBe(instanceProxy);
+    expect(receivedAsync).toBe(rawInstance);
     expect(receivedAsync._test_mutation).toBe('updated');
 
     unmount(component);
@@ -141,13 +144,11 @@ describe('createVirtualizer reactivity', () => {
     expect(lastOptions.value).toBeDefined();
 
     const { onChange } = lastOptions.value;
-    const instanceProxy = onInstanceChange.mock.calls[0]![0];
-    
-    // Verify stability: multiple reads should return the same proxy reference
-    expect(component.getVirtualizer().instance).toBe(instanceProxy);
-    expect(component.getVirtualizer().instance).toBe(instanceProxy);
+    const firstInstance = onInstanceChange.mock.calls[0]![0];
+    expect(component.getVirtualizer().instance).toBe(firstInstance);
 
     const rawInstance = lastInstance.value;
+    expect(rawInstance).toBe(firstInstance);
 
     // 1. Test sync update
     onChange(rawInstance, false);
@@ -156,8 +157,8 @@ describe('createVirtualizer reactivity', () => {
     await tick();
 
     expect(onInstanceChange).toHaveBeenCalledTimes(2);
-    expect(onInstanceChange.mock.calls[1]![0]).not.toBe(instanceProxy);
-    expect(component.getVirtualizer().instance).toBe(onInstanceChange.mock.calls[1]![0]);
+    expect(onInstanceChange.mock.calls[1]![0]).toBe(rawInstance);
+    expect(component.getVirtualizer().instance).toBe(rawInstance);
 
     // 2. Test async update
     onChange(rawInstance, true);
@@ -168,7 +169,7 @@ describe('createVirtualizer reactivity', () => {
     await tick();
 
     expect(onInstanceChange).toHaveBeenCalledTimes(3);
-    expect(onInstanceChange.mock.calls[2]![0]).not.toBe(instanceProxy);
+    expect(onInstanceChange.mock.calls[2]![0]).toBe(rawInstance);
 
     unmount(component);
   });
