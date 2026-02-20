@@ -28,7 +28,14 @@
 
 <header class="header">
   <div class="header-left">
-    <span class="header-title">Agent Session Viewer</span>
+    <svg class="header-logo" width="18" height="18" viewBox="0 0 32 32" aria-hidden="true">
+      <rect width="32" height="32" rx="6" fill="var(--accent-blue, #3b82f6)"/>
+      <rect x="13" y="10" width="6" height="16" rx="2" fill="var(--bg-surface, #fff)"/>
+      <rect x="11" y="5" width="10" height="7" rx="2" fill="var(--bg-surface, #fff)"/>
+      <circle cx="18" cy="8.5" r="2" fill="var(--accent-blue, #3b82f6)"/>
+      <circle cx="18" cy="8.5" r="1" fill="#1d4ed8"/>
+    </svg>
+    <span class="header-title">AgentsView</span>
 
     <nav class="header-nav">
       <button
@@ -192,6 +199,10 @@
     align-items: center;
     gap: 12px;
     min-width: 0;
+  }
+
+  .header-logo {
+    flex-shrink: 0;
   }
 
   .header-title {
