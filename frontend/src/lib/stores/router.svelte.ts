@@ -1,26 +1,29 @@
 type Route = "sessions";
 
-function parseHash(): { route: Route; params: Record<string, string> } {
-  const hash = window.location.hash.slice(1); // remove #
+function parseHash(): {
+  route: Route;
+  params: Record<string, string>;
+} {
+  const hash = window.location.hash.slice(1);
   if (!hash || hash === "/") {
     return { route: "sessions", params: {} };
   }
 
   const qIdx = hash.indexOf("?");
-  const params: Record<string, string> = {};
+  const path = qIdx >= 0 ? hash.slice(0, qIdx) : hash;
+  const routeString = path.startsWith("/")
+    ? path.slice(1)
+    : path;
+  const route = (routeString || "sessions") as Route;
 
-  if (qIdx >= 0) {
-    try {
-      const sp = new URLSearchParams(hash.slice(qIdx + 1));
-      for (const [k, v] of sp) {
-        params[k] = v;
-      }
-    } catch {
-      // Malformed query string — ignore params
-    }
-  }
+  const params =
+    qIdx >= 0
+      ? Object.fromEntries(
+          new URLSearchParams(hash.slice(qIdx + 1)),
+        )
+      : {};
 
-  return { route: "sessions", params };
+  return { route, params };
 }
 
 class RouterStore {
@@ -32,14 +35,10 @@ class RouterStore {
     this.route = initial.route;
     this.params = initial.params;
 
-    $effect.root(() => {
-      const handler = () => {
-        const parsed = parseHash();
-        this.route = parsed.route;
-        this.params = parsed.params;
-      };
-      window.addEventListener("hashchange", handler);
-      return () => window.removeEventListener("hashchange", handler);
+    window.addEventListener("hashchange", () => {
+      const parsed = parseHash();
+      this.route = parsed.route;
+      this.params = parsed.params;
     });
   }
 
