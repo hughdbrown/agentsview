@@ -660,8 +660,9 @@ func checkCache(
 
 	if isDevBuild {
 		// Cache only records the version, not full asset metadata.
-		// Return nil so the caller re-fetches with full info when
-		// an install (not just --check) is needed.
+		// Return a cacheOnly UpdateInfo so the caller can display
+		// version info for --check, but re-fetches with full
+		// download metadata when an install is needed.
 		return &UpdateInfo{
 			CurrentVersion: currentVersion,
 			LatestVersion:  cached.Version,

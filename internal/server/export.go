@@ -571,7 +571,9 @@ var (
 		`(?s)\[(Tool|Read|Write|Edit|Bash|Glob|Grep|Task|` +
 			`Question|Todo List|Entering Plan Mode|` +
 			`Exiting Plan Mode|exec_command|shell_command|` +
-			`write_stdin|apply_patch|shell)([^\]]*)\](.*?)(?:\n\[|\n\n|$)`)
+			`write_stdin|apply_patch|shell|parallel|` +
+			`view_image|request_user_input|update_plan` +
+			`)([^\]]*)\](.*?)(?:\n\[|\n\n|$)`)
 )
 
 func formatContentForExport(text string) string {

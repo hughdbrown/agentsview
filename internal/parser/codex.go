@@ -211,6 +211,10 @@ func parseCodexFunctionArgs(
 			return gjson.Result{}, s
 		default:
 			if arg.IsObject() || arg.IsArray() {
+				trimmed := strings.TrimSpace(arg.Raw)
+				if trimmed == "{}" || trimmed == "[]" {
+					continue
+				}
 				return arg, ""
 			}
 			raw := strings.TrimSpace(arg.Raw)

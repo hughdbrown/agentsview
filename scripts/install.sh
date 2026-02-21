@@ -67,11 +67,12 @@ verify_checksum() {
     local checksums_file="$2"
     local filename="$3"
 
+    if [ "${AGENTSVIEW_SKIP_CHECKSUM:-0}" = "1" ]; then
+        warn "Checksum verification skipped (AGENTSVIEW_SKIP_CHECKSUM=1)"
+        return 0
+    fi
+
     if [ ! -f "$checksums_file" ]; then
-        if [ "${AGENTSVIEW_SKIP_CHECKSUM:-0}" = "1" ]; then
-            warn "Checksum file not available, skipping verification (AGENTSVIEW_SKIP_CHECKSUM=1)"
-            return 0
-        fi
         error "Checksum file not available. Set AGENTSVIEW_SKIP_CHECKSUM=1 to bypass."
     fi
 
