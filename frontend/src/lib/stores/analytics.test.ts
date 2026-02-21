@@ -343,7 +343,9 @@ describe("AnalyticsStore.setProject", () => {
 
       analytics.setProject("alpha"); // deselect
 
-      const params = vi.mocked(fn()).mock.lastCall?.[0];
+      const mock = vi.mocked(fn());
+      expect(mock).toHaveBeenCalled();
+      const params = mock.mock.lastCall?.[0];
       expect(params?.project).toBeUndefined();
     },
   );
