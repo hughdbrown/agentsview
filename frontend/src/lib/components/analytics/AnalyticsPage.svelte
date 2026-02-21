@@ -15,6 +15,13 @@
   import { analytics } from "../../stores/analytics.svelte.js";
   import { exportAnalyticsCSV } from "../../utils/csv-export.js";
 
+  function shortTz(tz: string): string {
+    const slash = tz.lastIndexOf("/");
+    return slash >= 0
+      ? tz.slice(slash + 1).replace(/_/g, " ")
+      : tz;
+  }
+
   const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
   function handleExportCSV() {
@@ -70,16 +77,22 @@
     <SummaryCards />
 
     <div class="chart-grid">
-      <div class="chart-panel">
+      <div class="chart-panel wide">
         <Heatmap />
       </div>
 
       <div class="chart-panel">
-        <HourOfWeekHeatmap />
-      </div>
-
-      <div class="chart-panel">
+        <div class="chart-header">
+          <h3 class="chart-title">
+            Activity by Day and Hour
+            <span class="tz-label">
+              {shortTz(analytics.timezone)}
+            </span>
+          </h3>
+        </div>
         <ActivityTimeline />
+        <div class="chart-divider"></div>
+        <HourOfWeekHeatmap />
       </div>
 
       <div class="chart-panel">
@@ -189,6 +202,32 @@
 
   .chart-panel.wide {
     grid-column: 1 / -1;
+  }
+
+  .chart-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .chart-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .tz-label {
+    font-weight: 400;
+    color: var(--text-muted);
+    font-size: 10px;
+    margin-left: 4px;
+  }
+
+  .chart-divider {
+    height: 1px;
+    background: var(--border-muted);
+    margin: 12px 0;
   }
 
   @media (max-width: 800px) {

@@ -137,22 +137,9 @@
     return hour !== sh;
   }
 
-  function shortTz(tz: string): string {
-    const slash = tz.lastIndexOf("/");
-    return slash >= 0
-      ? tz.slice(slash + 1).replace(/_/g, " ")
-      : tz;
-  }
 </script>
 
 <div class="how-container">
-  <div class="chart-header">
-    <h3 class="chart-title">
-      Activity by Day and Hour
-      <span class="tz-label">{shortTz(analytics.timezone)}</span>
-    </h3>
-  </div>
-
   {#if analytics.loading.hourOfWeek}
     <div class="loading">Loading...</div>
   {:else if analytics.errors.hourOfWeek}
@@ -259,26 +246,6 @@
   .how-container {
     position: relative;
     flex: 1;
-  }
-
-  .chart-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-
-  .chart-title {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  .tz-label {
-    font-weight: 400;
-    color: var(--text-muted);
-    font-size: 10px;
-    margin-left: 4px;
   }
 
   .how-scroll {

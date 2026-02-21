@@ -247,14 +247,14 @@ describe('createVirtualizer reactivity', () => {
       options: {
         count: 10,
         getScrollElement: () => document.createElement('div'),
-        estimateSize: () => 50,
+        estimateSize: (): number => 50,
       },
     },
     {
       type: 'window' as const,
       options: {
         count: 20,
-        estimateSize: () => 50,
+        estimateSize: (): number => 50,
       },
     },
   ])(

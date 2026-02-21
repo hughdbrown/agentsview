@@ -164,7 +164,6 @@
 
 <div class="timeline-container">
   <div class="timeline-header">
-    <h3 class="chart-title">Activity</h3>
     <div class="controls">
       <div class="metric-toggle">
         <button
@@ -300,12 +299,6 @@
     align-items: center;
     justify-content: space-between;
     margin-bottom: 8px;
-  }
-
-  .chart-title {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-primary);
   }
 
   .controls {
