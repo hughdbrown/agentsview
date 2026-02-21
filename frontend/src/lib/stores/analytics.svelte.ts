@@ -107,28 +107,39 @@ class AnalyticsStore {
     topSessions: 0,
   };
 
-  private baseParams(): AnalyticsParams {
+  private baseParams(
+    opts: { includeProject?: boolean } = {},
+  ): AnalyticsParams {
+    const includeProject = opts.includeProject ?? true;
     const p: AnalyticsParams = {
       from: this.from,
       to: this.to,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
-    if (this.project) p.project = this.project;
+    if (includeProject && this.project) {
+      p.project = this.project;
+    }
     return p;
   }
 
   // Returns params narrowed to selectedDate when one is active.
-  // Used by summary, activity, and projects — but not heatmap.
-  private filterParams(): AnalyticsParams {
+  private filterParams(
+    opts: { includeProject?: boolean } = {},
+  ): AnalyticsParams {
+    const includeProject = opts.includeProject ?? true;
     if (this.selectedDate) {
-      return {
+      const p: AnalyticsParams = {
         from: this.selectedDate,
         to: this.selectedDate,
         timezone:
           Intl.DateTimeFormat().resolvedOptions().timeZone,
       };
+      if (includeProject && this.project) {
+        p.project = this.project;
+      }
+      return p;
     }
-    return this.baseParams();
+    return this.baseParams({ includeProject });
   }
 
   async fetchAll() {
@@ -217,30 +228,13 @@ class AnalyticsStore {
   // Projects chart always shows all projects (no project
   // filter) so the selected project can be highlighted in
   // context rather than shown in isolation.
-  private projectsParams(): AnalyticsParams {
-    if (this.selectedDate) {
-      return {
-        from: this.selectedDate,
-        to: this.selectedDate,
-        timezone:
-          Intl.DateTimeFormat().resolvedOptions().timeZone,
-      };
-    }
-    return {
-      from: this.from,
-      to: this.to,
-      timezone:
-        Intl.DateTimeFormat().resolvedOptions().timeZone,
-    };
-  }
-
   async fetchProjects() {
     const v = ++this.versions.projects;
     this.loading.projects = true;
     this.errors.projects = null;
     try {
       const data = await getAnalyticsProjects(
-        this.projectsParams(),
+        this.filterParams({ includeProject: false }),
       );
       if (this.versions.projects === v) {
         this.projects = data;

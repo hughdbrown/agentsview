@@ -16,6 +16,7 @@ import type {
   SessionShapeResponse,
   VelocityResponse,
   ToolsAnalyticsResponse,
+  TopSessionsResponse,
 } from "../api/types.js";
 
 vi.mock("../api/client.js", () => ({
@@ -27,6 +28,7 @@ vi.mock("../api/client.js", () => ({
   getAnalyticsSessionShape: vi.fn(),
   getAnalyticsVelocity: vi.fn(),
   getAnalyticsTools: vi.fn(),
+  getAnalyticsTopSessions: vi.fn(),
 }));
 
 
@@ -97,6 +99,10 @@ function makeTools(): ToolsAnalyticsResponse {
   };
 }
 
+function makeTopSessions(): TopSessionsResponse {
+  return { metric: "messages", sessions: [] };
+}
+
 function mockAllAPIs() {
   vi.mocked(api.getAnalyticsSummary).mockResolvedValue(
     makeSummary(),
@@ -122,10 +128,14 @@ function mockAllAPIs() {
   vi.mocked(api.getAnalyticsTools).mockResolvedValue(
     makeTools(),
   );
+  vi.mocked(api.getAnalyticsTopSessions).mockResolvedValue(
+    makeTopSessions(),
+  );
 }
 
 function resetStore() {
   analytics.selectedDate = null;
+  analytics.project = "";
   analytics.from = "2024-01-01";
   analytics.to = "2024-01-31";
 }
@@ -299,5 +309,75 @@ describe("AnalyticsStore heatmap uses full range", () => {
     assertParams(
       api.getAnalyticsHeatmap, "2024-01-01", "2024-01-31",
     );
+  });
+});
+
+describe("AnalyticsStore.setProject", () => {
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+    mockAllAPIs();
+  });
+
+  it("should toggle project on first click", () => {
+    analytics.setProject("alpha");
+    expect(analytics.project).toBe("alpha");
+  });
+
+  it("should clear project when clicking same project", () => {
+    analytics.setProject("alpha");
+    analytics.setProject("alpha");
+    expect(analytics.project).toBe("");
+  });
+
+  it("should switch to different project", () => {
+    analytics.setProject("alpha");
+    analytics.setProject("beta");
+    expect(analytics.project).toBe("beta");
+  });
+
+  it("should include project in filtered panel params", () => {
+    analytics.setProject("alpha");
+
+    const summaryParams =
+      vi.mocked(api.getAnalyticsSummary).mock.lastCall?.[0];
+    expect(summaryParams?.project).toBe("alpha");
+
+    const toolsParams =
+      vi.mocked(api.getAnalyticsTools).mock.lastCall?.[0];
+    expect(toolsParams?.project).toBe("alpha");
+  });
+
+  it("should exclude project from fetchProjects params", () => {
+    analytics.setProject("alpha");
+
+    const projectsParams =
+      vi.mocked(api.getAnalyticsProjects).mock.lastCall?.[0];
+    expect(projectsParams?.project).toBeUndefined();
+  });
+
+  it("should exclude project from fetchProjects even with selectedDate", () => {
+    analytics.selectDate("2024-01-15");
+    vi.clearAllMocks();
+    mockAllAPIs();
+
+    analytics.setProject("alpha");
+
+    const projectsParams =
+      vi.mocked(api.getAnalyticsProjects).mock.lastCall?.[0];
+    expect(projectsParams?.project).toBeUndefined();
+    expect(projectsParams?.from).toBe("2024-01-15");
+  });
+
+  it("should clear project param from panels after deselecting", () => {
+    analytics.setProject("alpha");
+    vi.clearAllMocks();
+    mockAllAPIs();
+
+    analytics.setProject("alpha"); // deselect
+
+    const summaryParams =
+      vi.mocked(api.getAnalyticsSummary).mock.lastCall?.[0];
+    expect(summaryParams?.project).toBeUndefined();
   });
 });
