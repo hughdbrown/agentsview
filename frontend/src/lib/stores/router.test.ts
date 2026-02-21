@@ -95,30 +95,54 @@ describe("RouterStore", () => {
 
   it("destroy removes the hashchange listener", () => {
     window.location.hash = "";
+    const addSpy = vi.spyOn(window, "addEventListener");
     store = new RouterStore();
 
-    const addSpy = vi.spyOn(window, "removeEventListener");
-    store.destroy();
-    expect(addSpy).toHaveBeenCalledWith(
-      "hashchange",
-      expect.any(Function),
-    );
+    const registeredCb = addSpy.mock.calls.find(
+      ([event]) => event === "hashchange",
+    )?.[1];
     addSpy.mockRestore();
+
+    const removeSpy = vi.spyOn(window, "removeEventListener");
+    store.destroy();
+    expect(removeSpy).toHaveBeenCalledWith(
+      "hashchange",
+      registeredCb,
+    );
+    removeSpy.mockRestore();
   });
 
   it("does not accumulate listeners across instances", () => {
     const addSpy = vi.spyOn(window, "addEventListener");
+    const removeSpy = vi.spyOn(
+      window,
+      "removeEventListener",
+    );
 
     const store1 = new RouterStore();
     const store2 = new RouterStore();
 
-    const hashChangeCalls = addSpy.mock.calls.filter(
+    const addCalls = addSpy.mock.calls.filter(
       ([event]) => event === "hashchange",
     );
-    expect(hashChangeCalls).toHaveLength(2);
+    expect(addCalls).toHaveLength(2);
 
     store1.destroy();
+
+    const removeCalls = removeSpy.mock.calls.filter(
+      ([event]) => event === "hashchange",
+    );
+    expect(removeCalls).toHaveLength(1);
+    expect(removeCalls[0]![1]).toBe(addCalls[0]![1]);
+
+    // Destroyed store should not react to hashchange
+    window.location.hash = "#/sessions?after=destroy1";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    expect(store1.params).not.toHaveProperty("after");
+    expect(store2.params).toEqual({ after: "destroy1" });
+
     store2.destroy();
     addSpy.mockRestore();
+    removeSpy.mockRestore();
   });
 });
