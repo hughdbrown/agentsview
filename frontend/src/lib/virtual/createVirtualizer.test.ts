@@ -19,6 +19,7 @@ vi.mock('@tanstack/virtual-core', async () => {
     ...original,
     Virtualizer: class {
       options: MockOptions;
+      scrollOffset: number | undefined = undefined;
       constructor(opts: MockOptions) {
         this.options = opts;
         lastOptions.value = opts;
@@ -180,6 +181,49 @@ describe('initialOffset semantics', () => {
     await tick();
     expect(lastOptions.value).toBeDefined();
     expect(lastOptions.value!.initialOffset).toBe(0);
+
+    unmount(component);
+  });
+
+  it('update path prefers instance.scrollOffset over wrapper initialOffset', async () => {
+    const onInstanceChange = vi.fn();
+    const container = document.createElement('div');
+    const scrollDiv = document.createElement('div');
+    Object.defineProperty(scrollDiv, 'scrollTop', {
+      value: 0,
+      writable: false,
+    });
+
+    const component = mount(VirtualizerTest, {
+      target: container,
+      props: {
+        type: 'element',
+        options: {
+          count: 10,
+          getScrollElement: () => scrollDiv,
+          estimateSize: () => 50,
+        },
+        onInstanceChange,
+      },
+    });
+
+    await tick();
+    expect(lastOptions.value).toBeDefined();
+    expect(lastOptions.value!.initialOffset).toBe(0);
+
+    // Simulate the instance having scrolled to offset 150
+    lastInstance.value!.scrollOffset = 150;
+
+    // Trigger an options update via setOptions on the test harness,
+    // which re-runs the $effect and hits the update path
+    component.setOptions({
+      count: 15,
+      getScrollElement: () => scrollDiv,
+      estimateSize: (): number => 50,
+    });
+    await tick();
+
+    expect(lastOptions.value!.initialOffset).toBe(150);
 
     unmount(component);
   });
