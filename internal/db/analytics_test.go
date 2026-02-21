@@ -1899,6 +1899,110 @@ func TestBuildWhereProjectFilter(t *testing.T) {
 	})
 }
 
+func TestTimeFilter(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	// Create sessions with messages at known day/hour combos.
+	// 2024-06-01 = Saturday (ISO dow 5)
+	// 2024-06-03 = Monday   (ISO dow 0)
+	insertSession(t, d, "tf1", "proj", func(s *Session) {
+		s.StartedAt = Ptr("2024-06-01T09:00:00Z")
+		s.EndedAt = Ptr("2024-06-01T10:00:00Z")
+		s.MessageCount = 2
+		s.Agent = "claude"
+	})
+	insertMessages(t, d,
+		Message{
+			SessionID: "tf1", Ordinal: 0, Role: "user",
+			Timestamp: "2024-06-01T09:05:00Z",
+			Content: "hello", ContentLength: 5,
+		},
+		Message{
+			SessionID: "tf1", Ordinal: 1, Role: "assistant",
+			Timestamp: "2024-06-01T09:10:00Z",
+			Content: "hi", ContentLength: 2,
+		},
+	)
+
+	insertSession(t, d, "tf2", "proj", func(s *Session) {
+		s.StartedAt = Ptr("2024-06-01T14:00:00Z")
+		s.EndedAt = Ptr("2024-06-01T15:00:00Z")
+		s.MessageCount = 1
+		s.Agent = "claude"
+	})
+	insertMessages(t, d, Message{
+		SessionID: "tf2", Ordinal: 0, Role: "user",
+		Timestamp: "2024-06-01T14:05:00Z",
+		Content: "world", ContentLength: 5,
+	})
+
+	insertSession(t, d, "tf3", "proj", func(s *Session) {
+		s.StartedAt = Ptr("2024-06-03T09:00:00Z")
+		s.EndedAt = Ptr("2024-06-03T10:00:00Z")
+		s.MessageCount = 1
+		s.Agent = "claude"
+	})
+	insertMessages(t, d, Message{
+		SessionID: "tf3", Ordinal: 0, Role: "user",
+		Timestamp: "2024-06-03T09:30:00Z",
+		Content: "test", ContentLength: 4,
+	})
+
+	f := AnalyticsFilter{
+		From:     "2024-06-01",
+		To:       "2024-06-03",
+		Timezone: "UTC",
+	}
+
+	t.Run("FilterByHour", func(t *testing.T) {
+		ff := f
+		hour := 9
+		ff.Hour = &hour
+		s := mustSummary(t, d, ctx, ff)
+		// tf1 and tf3 have messages at hour 9
+		if s.TotalSessions != 2 {
+			t.Errorf("TotalSessions = %d, want 2",
+				s.TotalSessions)
+		}
+	})
+
+	t.Run("FilterByDow", func(t *testing.T) {
+		ff := f
+		dow := 5 // Saturday
+		ff.DayOfWeek = &dow
+		s := mustSummary(t, d, ctx, ff)
+		// tf1 and tf2 are on Saturday
+		if s.TotalSessions != 2 {
+			t.Errorf("TotalSessions = %d, want 2",
+				s.TotalSessions)
+		}
+	})
+
+	t.Run("FilterByDowAndHour", func(t *testing.T) {
+		ff := f
+		dow := 5
+		hour := 14
+		ff.DayOfWeek = &dow
+		ff.Hour = &hour
+		s := mustSummary(t, d, ctx, ff)
+		// Only tf2 has messages on Saturday at hour 14
+		if s.TotalSessions != 1 {
+			t.Errorf("TotalSessions = %d, want 1",
+				s.TotalSessions)
+		}
+	})
+
+	t.Run("NoTimeFilter", func(t *testing.T) {
+		s := mustSummary(t, d, ctx, f)
+		// All 3 sessions
+		if s.TotalSessions != 3 {
+			t.Errorf("TotalSessions = %d, want 3",
+				s.TotalSessions)
+		}
+	})
+}
+
 func TestLocalTime(t *testing.T) {
 	tests := []struct {
 		name  string

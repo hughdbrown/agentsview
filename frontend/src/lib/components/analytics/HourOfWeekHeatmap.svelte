@@ -6,7 +6,9 @@
   const CELL_STEP = CELL_SIZE + CELL_GAP;
   const ROW_LABEL_WIDTH = 32;
   const COL_LABEL_HEIGHT = 18;
-  const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const DAY_LABELS = [
+    "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
+  ];
 
   const LEVEL_COLORS_LIGHT = [
     "var(--bg-inset)",
@@ -25,10 +27,11 @@
   ];
 
   function levelColor(level: number): string {
-    const isDark = document.documentElement.classList.contains(
-      "dark",
-    );
-    const colors = isDark ? LEVEL_COLORS_DARK : LEVEL_COLORS_LIGHT;
+    const isDark =
+      document.documentElement.classList.contains("dark");
+    const colors = isDark
+      ? LEVEL_COLORS_DARK
+      : LEVEL_COLORS_LIGHT;
     return colors[level] ?? colors[0]!;
   }
 
@@ -52,8 +55,6 @@
     const cells = analytics.hourOfWeek?.cells;
     if (!cells || cells.length === 0) return null;
 
-    // Index cells by (day_of_week, hour) to avoid assuming
-    // array order.
     const lookup = new Map<string, number>();
     let max = 0;
     for (const c of cells) {
@@ -61,9 +62,21 @@
       if (c.messages > max) max = c.messages;
     }
 
-    const rows: { day: string; hours: { hour: number; value: number; level: number }[] }[] = [];
+    const rows: {
+      day: string;
+      dayIdx: number;
+      hours: {
+        hour: number;
+        value: number;
+        level: number;
+      }[];
+    }[] = [];
     for (let d = 0; d < 7; d++) {
-      const hours: { hour: number; value: number; level: number }[] = [];
+      const hours: {
+        hour: number;
+        value: number;
+        level: number;
+      }[] = [];
       for (let h = 0; h < 24; h++) {
         const value = lookup.get(`${d}:${h}`) ?? 0;
         hours.push({
@@ -72,7 +85,7 @@
           level: assignLevel(value, max),
         });
       }
-      rows.push({ day: DAY_LABELS[d]!, hours });
+      rows.push({ day: DAY_LABELS[d]!, dayIdx: d, hours });
     }
     return rows;
   });
@@ -100,10 +113,77 @@
   function handleCellLeave() {
     tooltip = null;
   }
+
+  function handleCellClick(dow: number, hour: number) {
+    analytics.selectHourOfWeek(dow, hour);
+  }
+
+  function handleDayClick(dow: number) {
+    analytics.selectHourOfWeek(dow, null);
+  }
+
+  function handleHourClick(hour: number) {
+    analytics.selectHourOfWeek(null, hour);
+  }
+
+  function clearFilter() {
+    analytics.selectHourOfWeek(null, null);
+  }
+
+  function isDimmed(dow: number, hour: number): boolean {
+    const sd = analytics.selectedDow;
+    const sh = analytics.selectedHour;
+    if (sd === null && sh === null) return false;
+    if (sd !== null && sh !== null) {
+      return dow !== sd || hour !== sh;
+    }
+    if (sd !== null) return dow !== sd;
+    return hour !== sh;
+  }
+
+  const hasFilter = $derived(
+    analytics.selectedDow !== null ||
+    analytics.selectedHour !== null,
+  );
+
+  const filterLabel = $derived.by(() => {
+    const sd = analytics.selectedDow;
+    const sh = analytics.selectedHour;
+    if (sd !== null && sh !== null) {
+      return `${DAY_LABELS[sd]} ${sh.toString().padStart(2, "0")}:00`;
+    }
+    if (sd !== null) return DAY_LABELS[sd]!;
+    if (sh !== null) {
+      return `${sh.toString().padStart(2, "0")}:00`;
+    }
+    return "";
+  });
+
+  function shortTz(tz: string): string {
+    const slash = tz.lastIndexOf("/");
+    return slash >= 0
+      ? tz.slice(slash + 1).replace(/_/g, " ")
+      : tz;
+  }
 </script>
 
 <div class="how-container">
-  <h3 class="chart-title">Activity by Day and Hour</h3>
+  <div class="chart-header">
+    <h3 class="chart-title">
+      Activity by Day and Hour
+      <span class="tz-label">{shortTz(analytics.timezone)}</span>
+    </h3>
+    {#if hasFilter}
+      <span class="filter-badge">
+        {filterLabel}
+        <button
+          class="clear-btn"
+          onclick={clearFilter}
+          aria-label="Clear time filter"
+        >&times;</button>
+      </span>
+    {/if}
+  </div>
 
   {#if analytics.loading.hourOfWeek}
     <div class="loading">Loading...</div>
@@ -129,7 +209,11 @@
             x={h * CELL_STEP + ROW_LABEL_WIDTH + CELL_SIZE / 2}
             y={COL_LABEL_HEIGHT - 4}
             class="hour-label"
+            class:active-label={analytics.selectedHour === h}
             text-anchor="middle"
+            role="button"
+            tabindex="-1"
+            onclick={() => handleHourClick(h)}
           >
             {h}
           </text>
@@ -140,7 +224,11 @@
             x={ROW_LABEL_WIDTH - 4}
             y={rowIdx * CELL_STEP + COL_LABEL_HEIGHT + CELL_SIZE - 2}
             class="day-label"
+            class:active-label={analytics.selectedDow === row.dayIdx}
             text-anchor="end"
+            role="button"
+            tabindex="-1"
+            onclick={() => handleDayClick(row.dayIdx)}
           >
             {row.day}
           </text>
@@ -154,10 +242,14 @@
               rx="2"
               fill={levelColor(cell.level)}
               class="how-cell"
-              role="img"
+              class:dimmed={isDimmed(row.dayIdx, cell.hour)}
+              role="button"
+              tabindex="-1"
               onmouseenter={(e) =>
                 handleCellHover(e, row.day, cell.hour, cell.value)}
               onmouseleave={handleCellLeave}
+              onclick={() =>
+                handleCellClick(row.dayIdx, cell.hour)}
             />
           {/each}
         {/each}
@@ -183,11 +275,48 @@
     flex: 1;
   }
 
+  .chart-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
   .chart-title {
     font-size: 12px;
     font-weight: 600;
     color: var(--text-primary);
-    margin-bottom: 8px;
+  }
+
+  .tz-label {
+    font-weight: 400;
+    color: var(--text-muted);
+    font-size: 10px;
+    margin-left: 4px;
+  }
+
+  .filter-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--accent-blue);
+    background: var(--user-bg);
+    border-radius: var(--radius-sm);
+  }
+
+  .clear-btn {
+    font-size: 12px;
+    line-height: 1;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0 2px;
+  }
+
+  .clear-btn:hover {
+    color: var(--text-primary);
   }
 
   .how-scroll {
@@ -204,16 +333,32 @@
     font-size: 9px;
     fill: var(--text-muted);
     font-family: var(--font-sans);
+    cursor: pointer;
+  }
+
+  .hour-label:hover,
+  .day-label:hover {
+    fill: var(--text-primary);
+  }
+
+  .active-label {
+    fill: var(--accent-blue);
+    font-weight: 600;
   }
 
   .how-cell {
-    cursor: default;
+    cursor: pointer;
+    transition: opacity 0.15s;
   }
 
   .how-cell:hover {
     opacity: 0.8;
     stroke: var(--text-muted);
     stroke-width: 1;
+  }
+
+  .how-cell.dimmed {
+    opacity: 0.2;
   }
 
   .tooltip {

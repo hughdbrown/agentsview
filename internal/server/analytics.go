@@ -3,6 +3,7 @@ package server
 import (
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/wesm/agentsview/internal/db"
@@ -62,12 +63,36 @@ func parseAnalyticsFilter(
 		return db.AnalyticsFilter{}, false
 	}
 
+	var dow *int
+	if s := q.Get("dow"); s != "" {
+		v, err := strconv.Atoi(s)
+		if err != nil || v < 0 || v > 6 {
+			writeError(w, http.StatusBadRequest,
+				"dow must be 0-6 (Mon=0, Sun=6)")
+			return db.AnalyticsFilter{}, false
+		}
+		dow = &v
+	}
+
+	var hour *int
+	if s := q.Get("hour"); s != "" {
+		v, err := strconv.Atoi(s)
+		if err != nil || v < 0 || v > 23 {
+			writeError(w, http.StatusBadRequest,
+				"hour must be 0-23")
+			return db.AnalyticsFilter{}, false
+		}
+		hour = &v
+	}
+
 	return db.AnalyticsFilter{
-		From:     from,
-		To:       to,
-		Machine:  q.Get("machine"),
-		Project:  q.Get("project"),
-		Timezone: tz,
+		From:      from,
+		To:        to,
+		Machine:   q.Get("machine"),
+		Project:   q.Get("project"),
+		Timezone:  tz,
+		DayOfWeek: dow,
+		Hour:      hour,
 	}, true
 }
 

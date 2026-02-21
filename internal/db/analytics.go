@@ -45,11 +45,13 @@ func queryChunked(
 
 // AnalyticsFilter is the shared filter for all analytics queries.
 type AnalyticsFilter struct {
-	From     string // ISO date YYYY-MM-DD, inclusive
-	To       string // ISO date YYYY-MM-DD, inclusive
-	Machine  string // optional machine filter
-	Project  string // optional project filter
-	Timezone string // IANA timezone for day bucketing
+	From      string // ISO date YYYY-MM-DD, inclusive
+	To        string // ISO date YYYY-MM-DD, inclusive
+	Machine   string // optional machine filter
+	Project   string // optional project filter
+	Timezone  string // IANA timezone for day bucketing
+	DayOfWeek *int   // nil = all, 0=Mon, 6=Sun (ISO)
+	Hour      *int   // nil = all, 0-23
 }
 
 // location loads the timezone or returns UTC on error.
@@ -111,6 +113,82 @@ func (f AnalyticsFilter) buildWhere(
 	}
 
 	return strings.Join(preds, " AND "), args
+}
+
+// HasTimeFilter returns true when hour-of-day or day-of-week
+// filtering is active.
+func (f AnalyticsFilter) HasTimeFilter() bool {
+	return f.DayOfWeek != nil || f.Hour != nil
+}
+
+// matchesTimeFilter checks whether a local time matches the
+// active hour and/or day-of-week filter.
+func (f AnalyticsFilter) matchesTimeFilter(
+	t time.Time,
+) bool {
+	if f.DayOfWeek != nil {
+		dow := (int(t.Weekday()) + 6) % 7 // ISO Mon=0
+		if dow != *f.DayOfWeek {
+			return false
+		}
+	}
+	if f.Hour != nil {
+		if t.Hour() != *f.Hour {
+			return false
+		}
+	}
+	return true
+}
+
+// filteredSessionIDs returns the set of session IDs that have
+// at least one message matching the hour/dow filter. Used by
+// session-level queries to restrict results when time filters
+// are active.
+func (db *DB) filteredSessionIDs(
+	ctx context.Context, f AnalyticsFilter,
+) (map[string]bool, error) {
+	loc := f.location()
+	dateCol := "COALESCE(s.started_at, s.created_at)"
+	where, args := f.buildWhere(dateCol)
+
+	query := `SELECT s.id, m.timestamp
+		FROM sessions s
+		JOIN messages m ON m.session_id = s.id
+		WHERE ` + where + ` AND m.timestamp != ''`
+
+	rows, err := db.reader.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"querying filtered session IDs: %w", err,
+		)
+	}
+	defer rows.Close()
+
+	ids := make(map[string]bool)
+	for rows.Next() {
+		var sid, msgTS string
+		if err := rows.Scan(&sid, &msgTS); err != nil {
+			return nil, fmt.Errorf(
+				"scanning filtered session ID: %w", err,
+			)
+		}
+		if ids[sid] {
+			continue // already matched
+		}
+		t, ok := localTime(msgTS, loc)
+		if !ok {
+			continue
+		}
+		if f.matchesTimeFilter(t) {
+			ids[sid] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf(
+			"iterating filtered session IDs: %w", err,
+		)
+	}
+	return ids, nil
 }
 
 // localTime parses a UTC timestamp string and converts it to the
@@ -203,8 +281,18 @@ func (db *DB) GetAnalyticsSummary(
 	dateCol := "COALESCE(started_at, created_at)"
 	where, args := f.buildWhere(dateCol)
 
+	var timeIDs map[string]bool
+	if f.HasTimeFilter() {
+		var err error
+		timeIDs, err = db.filteredSessionIDs(ctx, f)
+		if err != nil {
+			return AnalyticsSummary{}, err
+		}
+	}
+
 	// Fetch sessions with their message counts and agents
-	query := `SELECT ` + dateCol + `, message_count, agent, project
+	query := `SELECT id, ` + dateCol +
+		`, message_count, agent, project
 		FROM sessions WHERE ` + where +
 		` ORDER BY message_count ASC`
 
@@ -224,15 +312,20 @@ func (db *DB) GetAnalyticsSummary(
 
 	var all []sessionRow
 	for rows.Next() {
-		var ts string
+		var id, ts string
 		var mc int
 		var agent, project string
-		if err := rows.Scan(&ts, &mc, &agent, &project); err != nil {
+		if err := rows.Scan(
+			&id, &ts, &mc, &agent, &project,
+		); err != nil {
 			return AnalyticsSummary{},
 				fmt.Errorf("scanning summary row: %w", err)
 		}
 		date := localDate(ts, loc)
 		if !inDateRange(date, f.From, f.To) {
+			continue
+		}
+		if timeIDs != nil && !timeIDs[id] {
 			continue
 		}
 		all = append(all, sessionRow{
@@ -376,6 +469,15 @@ func (db *DB) GetAnalyticsActivity(
 	dateCol := "COALESCE(s.started_at, s.created_at)"
 	where, args := f.buildWhere(dateCol)
 
+	var timeIDs map[string]bool
+	if f.HasTimeFilter() {
+		var err error
+		timeIDs, err = db.filteredSessionIDs(ctx, f)
+		if err != nil {
+			return ActivityResponse{}, err
+		}
+	}
+
 	query := `SELECT ` + dateCol + `, s.agent, s.id,
 		m.role, m.has_thinking, COUNT(*)
 		FROM sessions s
@@ -409,6 +511,9 @@ func (db *DB) GetAnalyticsActivity(
 
 		date := localDate(ts, loc)
 		if !inDateRange(date, f.From, f.To) {
+			continue
+		}
+		if timeIDs != nil && !timeIDs[sid] {
 			continue
 		}
 		bucket := bucketDate(date, granularity)
@@ -550,7 +655,16 @@ func (db *DB) GetAnalyticsHeatmap(
 	dateCol := "COALESCE(started_at, created_at)"
 	where, args := f.buildWhere(dateCol)
 
-	query := `SELECT ` + dateCol + `, message_count
+	var timeIDs map[string]bool
+	if f.HasTimeFilter() {
+		var err error
+		timeIDs, err = db.filteredSessionIDs(ctx, f)
+		if err != nil {
+			return HeatmapResponse{}, err
+		}
+	}
+
+	query := `SELECT id, ` + dateCol + `, message_count
 		FROM sessions WHERE ` + where
 
 	rows, err := db.reader.QueryContext(ctx, query, args...)
@@ -564,14 +678,17 @@ func (db *DB) GetAnalyticsHeatmap(
 	daySessions := make(map[string]int)
 
 	for rows.Next() {
-		var ts string
+		var id, ts string
 		var mc int
-		if err := rows.Scan(&ts, &mc); err != nil {
+		if err := rows.Scan(&id, &ts, &mc); err != nil {
 			return HeatmapResponse{},
 				fmt.Errorf("scanning heatmap row: %w", err)
 		}
 		date := localDate(ts, loc)
 		if !inDateRange(date, f.From, f.To) {
+			continue
+		}
+		if timeIDs != nil && !timeIDs[id] {
 			continue
 		}
 		dayCounts[date] += mc
@@ -696,7 +813,16 @@ func (db *DB) GetAnalyticsProjects(
 	dateCol := "COALESCE(started_at, created_at)"
 	where, args := f.buildWhere(dateCol)
 
-	query := `SELECT project, ` + dateCol + `,
+	var timeIDs map[string]bool
+	if f.HasTimeFilter() {
+		var err error
+		timeIDs, err = db.filteredSessionIDs(ctx, f)
+		if err != nil {
+			return ProjectsAnalyticsResponse{}, err
+		}
+	}
+
+	query := `SELECT id, project, ` + dateCol + `,
 		message_count, agent
 		FROM sessions WHERE ` + where +
 		` ORDER BY project, ` + dateCol
@@ -723,16 +849,19 @@ func (db *DB) GetAnalyticsProjects(
 	var projectOrder []string
 
 	for rows.Next() {
-		var project, ts, agent string
+		var id, project, ts, agent string
 		var mc int
 		if err := rows.Scan(
-			&project, &ts, &mc, &agent,
+			&id, &project, &ts, &mc, &agent,
 		); err != nil {
 			return ProjectsAnalyticsResponse{},
 				fmt.Errorf("scanning project row: %w", err)
 		}
 		date := localDate(ts, loc)
 		if !inDateRange(date, f.From, f.To) {
+			continue
+		}
+		if timeIDs != nil && !timeIDs[id] {
 			continue
 		}
 
@@ -1002,6 +1131,15 @@ func (db *DB) GetAnalyticsSessionShape(
 	dateCol := "COALESCE(started_at, created_at)"
 	where, args := f.buildWhere(dateCol)
 
+	var timeIDs map[string]bool
+	if f.HasTimeFilter() {
+		var err error
+		timeIDs, err = db.filteredSessionIDs(ctx, f)
+		if err != nil {
+			return SessionShapeResponse{}, err
+		}
+	}
+
 	query := `SELECT ` + dateCol + `, started_at, ended_at,
 		message_count, id FROM sessions WHERE ` + where
 
@@ -1036,6 +1174,9 @@ func (db *DB) GetAnalyticsSessionShape(
 		}
 		date := localDate(ts, loc)
 		if !inDateRange(date, f.From, f.To) {
+			continue
+		}
+		if timeIDs != nil && !timeIDs[id] {
 			continue
 		}
 
@@ -1162,6 +1303,15 @@ func (db *DB) GetAnalyticsTools(
 	dateCol := "COALESCE(started_at, created_at)"
 	where, args := f.buildWhere(dateCol)
 
+	var timeIDs map[string]bool
+	if f.HasTimeFilter() {
+		var err error
+		timeIDs, err = db.filteredSessionIDs(ctx, f)
+		if err != nil {
+			return ToolsAnalyticsResponse{}, err
+		}
+	}
+
 	// Fetch filtered session IDs and their metadata.
 	sessQ := `SELECT id, ` + dateCol + `, agent
 		FROM sessions WHERE ` + where
@@ -1188,6 +1338,9 @@ func (db *DB) GetAnalyticsTools(
 		}
 		date := localDate(ts, loc)
 		if !inDateRange(date, f.From, f.To) {
+			continue
+		}
+		if timeIDs != nil && !timeIDs[id] {
 			continue
 		}
 		sessionMap[id] = sessInfo{date: date, agent: agent}
@@ -1496,6 +1649,15 @@ func (db *DB) GetAnalyticsVelocity(
 	dateCol := "COALESCE(started_at, created_at)"
 	where, args := f.buildWhere(dateCol)
 
+	var timeIDs map[string]bool
+	if f.HasTimeFilter() {
+		var err error
+		timeIDs, err = db.filteredSessionIDs(ctx, f)
+		if err != nil {
+			return VelocityResponse{}, err
+		}
+	}
+
 	// Phase 1: Get filtered session metadata
 	sessQuery := `SELECT id, ` + dateCol + `, agent,
 		message_count FROM sessions WHERE ` + where
@@ -1527,6 +1689,9 @@ func (db *DB) GetAnalyticsVelocity(
 		}
 		date := localDate(ts, loc)
 		if !inDateRange(date, f.From, f.To) {
+			continue
+		}
+		if timeIDs != nil && !timeIDs[id] {
 			continue
 		}
 		sessionMap[id] = sessInfo{agent: agent, mc: mc}
@@ -1784,6 +1949,15 @@ func (db *DB) GetAnalyticsTopSessions(
 	dateCol := "COALESCE(started_at, created_at)"
 	where, args := f.buildWhere(dateCol)
 
+	var timeIDs map[string]bool
+	if f.HasTimeFilter() {
+		var err error
+		timeIDs, err = db.filteredSessionIDs(ctx, f)
+		if err != nil {
+			return TopSessionsResponse{}, err
+		}
+	}
+
 	var orderExpr string
 	switch metric {
 	case "duration":
@@ -1800,7 +1974,7 @@ func (db *DB) GetAnalyticsTopSessions(
 		first_message, message_count,
 		started_at, ended_at
 		FROM sessions WHERE ` + where +
-		` ORDER BY ` + orderExpr + ` LIMIT 10`
+		` ORDER BY ` + orderExpr + ` LIMIT 50`
 
 	rows, err := db.reader.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1823,6 +1997,9 @@ func (db *DB) GetAnalyticsTopSessions(
 		}
 		date := localDate(ts, loc)
 		if !inDateRange(date, f.From, f.To) {
+			continue
+		}
+		if timeIDs != nil && !timeIDs[id] {
 			continue
 		}
 		durMin := 0.0
@@ -1849,6 +2026,9 @@ func (db *DB) GetAnalyticsTopSessions(
 
 	if sessions == nil {
 		sessions = []TopSession{}
+	}
+	if len(sessions) > 10 {
+		sessions = sessions[:10]
 	}
 
 	return TopSessionsResponse{

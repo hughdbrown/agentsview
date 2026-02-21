@@ -62,6 +62,8 @@ class AnalyticsStore {
   metric: HeatmapMetric = $state("messages");
   selectedDate: string | null = $state(null);
   project: string = $state("");
+  selectedDow: number | null = $state(null);
+  selectedHour: number | null = $state(null);
 
   summary = $state<AnalyticsSummary | null>(null);
   activity = $state<ActivityResponse | null>(null);
@@ -110,38 +112,63 @@ class AnalyticsStore {
     topSessions: 0,
   };
 
+  get timezone(): string {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  }
+
   private baseParams(
-    opts: { includeProject?: boolean } = {},
+    opts: {
+      includeProject?: boolean;
+      includeTime?: boolean;
+    } = {},
   ): AnalyticsParams {
     const includeProject = opts.includeProject ?? true;
+    const includeTime = opts.includeTime ?? true;
     const p: AnalyticsParams = {
       from: this.from,
       to: this.to,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      timezone: this.timezone,
     };
     if (includeProject && this.project) {
       p.project = this.project;
+    }
+    if (includeTime) {
+      if (this.selectedDow !== null) p.dow = this.selectedDow;
+      if (this.selectedHour !== null) {
+        p.hour = this.selectedHour;
+      }
     }
     return p;
   }
 
   private filterParams(
-    opts: { includeProject?: boolean } = {},
+    opts: {
+      includeProject?: boolean;
+      includeTime?: boolean;
+    } = {},
   ): AnalyticsParams {
     const includeProject = opts.includeProject ?? true;
+    const includeTime = opts.includeTime ?? true;
     if (this.selectedDate) {
       const p: AnalyticsParams = {
         from: this.selectedDate,
         to: this.selectedDate,
-        timezone:
-          Intl.DateTimeFormat().resolvedOptions().timeZone,
+        timezone: this.timezone,
       };
       if (includeProject && this.project) {
         p.project = this.project;
       }
+      if (includeTime) {
+        if (this.selectedDow !== null) {
+          p.dow = this.selectedDow;
+        }
+        if (this.selectedHour !== null) {
+          p.hour = this.selectedHour;
+        }
+      }
       return p;
     }
-    return this.baseParams({ includeProject });
+    return this.baseParams({ includeProject, includeTime });
   }
 
   private async executeFetch<T>(
@@ -229,7 +256,9 @@ class AnalyticsStore {
   async fetchHourOfWeek() {
     await this.executeFetch(
       "hourOfWeek",
-      () => getAnalyticsHourOfWeek(this.baseParams()),
+      () => getAnalyticsHourOfWeek(
+        this.baseParams({ includeTime: false }),
+      ),
       (data) => { this.hourOfWeek = data; },
     );
   }
@@ -278,6 +307,8 @@ class AnalyticsStore {
     this.from = from;
     this.to = to;
     this.selectedDate = null;
+    this.selectedDow = null;
+    this.selectedHour = null;
     this.fetchAll();
   }
 
@@ -304,6 +335,31 @@ class AnalyticsStore {
   setMetric(m: HeatmapMetric) {
     this.metric = m;
     this.fetchHeatmap();
+  }
+
+  selectHourOfWeek(
+    dow: number | null,
+    hour: number | null,
+  ) {
+    // Toggle off if clicking the same selection
+    if (
+      this.selectedDow === dow &&
+      this.selectedHour === hour
+    ) {
+      this.selectedDow = null;
+      this.selectedHour = null;
+    } else {
+      this.selectedDow = dow;
+      this.selectedHour = hour;
+    }
+    this.fetchSummary();
+    this.fetchActivity();
+    this.fetchHeatmap();
+    this.fetchProjects();
+    this.fetchSessionShape();
+    this.fetchVelocity();
+    this.fetchTools();
+    this.fetchTopSessions();
   }
 
   setProject(name: string) {

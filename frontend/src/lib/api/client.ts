@@ -328,6 +328,8 @@ export interface AnalyticsParams {
   timezone?: string;
   machine?: string;
   project?: string;
+  dow?: number;
+  hour?: number;
 }
 
 export function getAnalyticsSummary(
