@@ -13,6 +13,62 @@ function parseHTML(html: string): HTMLElement {
   return div;
 }
 
+/**
+ * Parse HTML as a full document so special elements like <body>
+ * are handled correctly (fragment parsing ignores them).
+ */
+function parseFullDocument(html: string): Document {
+  return new DOMParser().parseFromString(html, "text/html");
+}
+
+/**
+ * Normalize an href value for security checking. Strips control
+ * characters, decodes HTML entities and percent-encoding, and
+ * lowercases — so obfuscated schemes like `java\tscript:` or
+ * `&#106;avascript:` are detected.
+ */
+function normalizeHref(raw: string): string {
+  const txt = document.createElement("textarea");
+  txt.innerHTML = raw;
+  const decoded = txt.value;
+  const stripped = decoded.replace(/[\x00-\x1f\x7f]/g, "");
+  try {
+    return decodeURIComponent(stripped).toLowerCase();
+  } catch {
+    return stripped.toLowerCase();
+  }
+}
+
+/**
+ * Assert that no anchor in the rendered HTML has an href matching
+ * the given dangerous scheme pattern. If no anchor is produced
+ * (parser rejected the link syntax), verify the raw HTML also
+ * contains no href with the scheme — so the test never passes
+ * vacuously.
+ */
+function assertNoAnchorScheme(
+  html: string,
+  scheme: RegExp,
+): void {
+  const dom = parseHTML(html);
+  const anchors = dom.querySelectorAll("a");
+  if (anchors.length === 0) {
+    const hrefPattern = /href\s*=\s*["']([^"']*)["']/gi;
+    let match: RegExpExecArray | null;
+    while ((match = hrefPattern.exec(html)) !== null) {
+      const norm = normalizeHref(match[1]!);
+      expect(norm).not.toMatch(scheme);
+    }
+    return;
+  }
+  for (const a of anchors) {
+    if (!a.hasAttribute("href")) continue;
+    const href = a.getAttribute("href") ?? "";
+    const norm = normalizeHref(href);
+    expect(norm).not.toMatch(scheme);
+  }
+}
+
 describe("renderMarkdown", () => {
   describe("inline formatting", () => {
     it("renders bold text", () => {
@@ -156,36 +212,21 @@ describe("renderMarkdown", () => {
         name: "tab-padded javascript: URL",
         input: "[click](java\tscript:alert(1))",
         assert(html) {
-          const dom = parseHTML(html);
-          const a = dom.querySelector("a");
-          if (a) {
-            const href = a.getAttribute("href") ?? "";
-            expect(href).not.toMatch(/javascript/i);
-          }
+          assertNoAnchorScheme(html, /^javascript:/);
         },
       },
       {
         name: "newline-padded javascript: URL",
         input: "[click](java\nscript:alert(1))",
         assert(html) {
-          const dom = parseHTML(html);
-          const a = dom.querySelector("a");
-          if (a) {
-            const href = a.getAttribute("href") ?? "";
-            expect(href).not.toMatch(/javascript/i);
-          }
+          assertNoAnchorScheme(html, /^javascript:/);
         },
       },
       {
         name: "URL-encoded javascript: scheme",
         input: "[click](&#106;avascript:alert(1))",
         assert(html) {
-          const dom = parseHTML(html);
-          const a = dom.querySelector("a");
-          if (a) {
-            const href = a.getAttribute("href") ?? "";
-            expect(href).not.toMatch(/javascript/i);
-          }
+          assertNoAnchorScheme(html, /^javascript:/);
         },
       },
       {
@@ -193,12 +234,7 @@ describe("renderMarkdown", () => {
         input:
           '[click](data:text/html,<script>alert(1)</script>)',
         assert(html) {
-          const dom = parseHTML(html);
-          const a = dom.querySelector("a");
-          if (a) {
-            const href = a.getAttribute("href") ?? "";
-            expect(href).not.toMatch(/^data:/i);
-          }
+          assertNoAnchorScheme(html, /^data:/);
         },
       },
       {
@@ -206,32 +242,22 @@ describe("renderMarkdown", () => {
         input:
           "[click](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
         assert(html) {
-          const dom = parseHTML(html);
-          const a = dom.querySelector("a");
-          if (a) {
-            const href = a.getAttribute("href") ?? "";
-            expect(href).not.toMatch(/^data:/i);
-          }
+          assertNoAnchorScheme(html, /^data:/);
         },
       },
       {
         name: "vbscript: URL",
         input: "[click](vbscript:MsgBox(1))",
         assert(html) {
-          const dom = parseHTML(html);
-          const a = dom.querySelector("a");
-          if (a) {
-            const href = a.getAttribute("href") ?? "";
-            expect(href).not.toMatch(/vbscript/i);
-          }
+          assertNoAnchorScheme(html, /^vbscript:/);
         },
       },
       {
         name: "onload event handler on body tag",
         input: '<body onload="alert(1)">',
         assert(html) {
-          const dom = parseHTML(html);
-          for (const el of dom.querySelectorAll("*")) {
+          const doc = parseFullDocument(html);
+          for (const el of doc.querySelectorAll("*")) {
             expect(el.hasAttribute("onload")).toBe(false);
           }
         },
