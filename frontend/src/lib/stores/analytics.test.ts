@@ -336,17 +336,33 @@ describe("AnalyticsStore.setProject", () => {
     expect(analytics.project).toBe("beta");
   });
 
-  it("should include project in filtered panel params", () => {
-    analytics.setProject("alpha");
+  it.each([
+    { name: "summary", fn: () => api.getAnalyticsSummary },
+    { name: "activity", fn: () => api.getAnalyticsActivity },
+    { name: "sessionShape", fn: () => api.getAnalyticsSessionShape },
+    { name: "velocity", fn: () => api.getAnalyticsVelocity },
+    { name: "tools", fn: () => api.getAnalyticsTools },
+    { name: "topSessions", fn: () => api.getAnalyticsTopSessions },
+  ])(
+    "should include project in $name params",
+    ({ fn }) => {
+      analytics.setProject("alpha");
+      const params = vi.mocked(fn()).mock.lastCall?.[0];
+      expect(params?.project).toBe("alpha");
+    },
+  );
 
-    const summaryParams =
-      vi.mocked(api.getAnalyticsSummary).mock.lastCall?.[0];
-    expect(summaryParams?.project).toBe("alpha");
-
-    const toolsParams =
-      vi.mocked(api.getAnalyticsTools).mock.lastCall?.[0];
-    expect(toolsParams?.project).toBe("alpha");
-  });
+  it.each([
+    { name: "heatmap", fn: () => api.getAnalyticsHeatmap },
+    { name: "hourOfWeek", fn: () => api.getAnalyticsHourOfWeek },
+  ])(
+    "should include project in $name base params",
+    ({ fn }) => {
+      analytics.setProject("alpha");
+      const params = vi.mocked(fn()).mock.lastCall?.[0];
+      expect(params?.project).toBe("alpha");
+    },
+  );
 
   it("should exclude project from fetchProjects params", () => {
     analytics.setProject("alpha");
@@ -369,15 +385,26 @@ describe("AnalyticsStore.setProject", () => {
     expect(projectsParams?.from).toBe("2024-01-15");
   });
 
-  it("should clear project param from panels after deselecting", () => {
-    analytics.setProject("alpha");
-    vi.clearAllMocks();
-    mockAllAPIs();
+  it.each([
+    { name: "summary", fn: () => api.getAnalyticsSummary },
+    { name: "activity", fn: () => api.getAnalyticsActivity },
+    { name: "sessionShape", fn: () => api.getAnalyticsSessionShape },
+    { name: "velocity", fn: () => api.getAnalyticsVelocity },
+    { name: "tools", fn: () => api.getAnalyticsTools },
+    { name: "topSessions", fn: () => api.getAnalyticsTopSessions },
+    { name: "heatmap", fn: () => api.getAnalyticsHeatmap },
+    { name: "hourOfWeek", fn: () => api.getAnalyticsHourOfWeek },
+  ])(
+    "should clear project from $name params after deselecting",
+    ({ fn }) => {
+      analytics.setProject("alpha");
+      vi.clearAllMocks();
+      mockAllAPIs();
 
-    analytics.setProject("alpha"); // deselect
+      analytics.setProject("alpha"); // deselect
 
-    const summaryParams =
-      vi.mocked(api.getAnalyticsSummary).mock.lastCall?.[0];
-    expect(summaryParams?.project).toBeUndefined();
-  });
+      const params = vi.mocked(fn()).mock.lastCall?.[0];
+      expect(params?.project).toBeUndefined();
+    },
+  );
 });
