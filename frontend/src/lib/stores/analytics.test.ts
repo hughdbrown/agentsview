@@ -140,43 +140,18 @@ function resetStore() {
   analytics.to = "2024-01-31";
 }
 
-// Assert the most recent call to a mocked API function used
-// the expected from/to params. Uses lastCall so it reads the
-// right invocation even if the mock was called multiple times.
-type ParamFn = (params: {
-  from?: string;
-  to?: string;
-}) => Promise<unknown>;
-
-function assertParams(
-  fn: ParamFn,
-  from: string,
-  to: string,
-) {
-  const mock = vi.mocked(fn);
-  expect(mock).toHaveBeenCalled();
-  const call = mock.mock.lastCall;
-  expect(call).toBeDefined();
-  const params = call?.[0];
-  if (!params) {
-    throw new Error("expected analytics params call");
-  }
-  expect(params.from).toBe(from);
-  expect(params.to).toBe(to);
-}
-
 // Note: selectDate and setDateRange invoke API mocks
 // synchronously (the mock call is recorded before the first
 // await inside fetchSummary/etc.), so no async flushing is
 // needed for call-count or call-param assertions.
 
-describe("AnalyticsStore.selectDate", () => {
-  beforeEach(() => {
-    resetStore();
-    vi.clearAllMocks();
-    mockAllAPIs();
-  });
+beforeEach(() => {
+  resetStore();
+  vi.clearAllMocks();
+  mockAllAPIs();
+});
 
+describe("AnalyticsStore.selectDate", () => {
   it("should set selectedDate on first click", () => {
     analytics.selectDate("2024-01-15");
     expect(analytics.selectedDate).toBe("2024-01-15");
@@ -210,43 +185,36 @@ describe("AnalyticsStore.selectDate", () => {
   it("should pass selected date as from/to for filtered panels", () => {
     analytics.selectDate("2024-01-15");
 
-    assertParams(
-      api.getAnalyticsSummary, "2024-01-15", "2024-01-15",
+    expect(api.getAnalyticsSummary).toHaveBeenLastCalledWith(
+      expect.objectContaining({ from: "2024-01-15", to: "2024-01-15" }),
     );
-    assertParams(
-      api.getAnalyticsActivity, "2024-01-15", "2024-01-15",
+    expect(api.getAnalyticsActivity).toHaveBeenLastCalledWith(
+      expect.objectContaining({ from: "2024-01-15", to: "2024-01-15" }),
     );
-    assertParams(
-      api.getAnalyticsProjects, "2024-01-15", "2024-01-15",
+    expect(api.getAnalyticsProjects).toHaveBeenLastCalledWith(
+      expect.objectContaining({ from: "2024-01-15", to: "2024-01-15" }),
     );
   });
 
   it("should use full range after deselecting", () => {
     analytics.selectDate("2024-01-15");
     vi.clearAllMocks();
-    mockAllAPIs();
 
     analytics.selectDate("2024-01-15"); // deselect
 
-    assertParams(
-      api.getAnalyticsSummary, "2024-01-01", "2024-01-31",
+    expect(api.getAnalyticsSummary).toHaveBeenLastCalledWith(
+      expect.objectContaining({ from: "2024-01-01", to: "2024-01-31" }),
     );
-    assertParams(
-      api.getAnalyticsActivity, "2024-01-01", "2024-01-31",
+    expect(api.getAnalyticsActivity).toHaveBeenLastCalledWith(
+      expect.objectContaining({ from: "2024-01-01", to: "2024-01-31" }),
     );
-    assertParams(
-      api.getAnalyticsProjects, "2024-01-01", "2024-01-31",
+    expect(api.getAnalyticsProjects).toHaveBeenLastCalledWith(
+      expect.objectContaining({ from: "2024-01-01", to: "2024-01-31" }),
     );
   });
 });
 
 describe("AnalyticsStore.setDateRange", () => {
-  beforeEach(() => {
-    resetStore();
-    vi.clearAllMocks();
-    mockAllAPIs();
-  });
-
   it("should clear selectedDate", () => {
     analytics.selectDate("2024-01-15");
     analytics.setDateRange("2024-02-01", "2024-02-28");
@@ -265,60 +233,34 @@ describe("AnalyticsStore.setDateRange", () => {
     expect(api.getAnalyticsVelocity).toHaveBeenCalledTimes(1);
     expect(api.getAnalyticsTools).toHaveBeenCalledTimes(1);
 
-    assertParams(
-      api.getAnalyticsSummary, "2024-02-01", "2024-02-28",
-    );
-    assertParams(
-      api.getAnalyticsActivity, "2024-02-01", "2024-02-28",
-    );
-    assertParams(
-      api.getAnalyticsHeatmap, "2024-02-01", "2024-02-28",
-    );
-    assertParams(
-      api.getAnalyticsProjects, "2024-02-01", "2024-02-28",
-    );
-    assertParams(
-      api.getAnalyticsHourOfWeek, "2024-02-01", "2024-02-28",
-    );
-    assertParams(
-      api.getAnalyticsSessionShape, "2024-02-01", "2024-02-28",
-    );
-    assertParams(
-      api.getAnalyticsVelocity, "2024-02-01", "2024-02-28",
-    );
-    assertParams(
-      api.getAnalyticsTools, "2024-02-01", "2024-02-28",
-    );
+    const expected = expect.objectContaining({
+      from: "2024-02-01", to: "2024-02-28",
+    });
+    expect(api.getAnalyticsSummary).toHaveBeenLastCalledWith(expected);
+    expect(api.getAnalyticsActivity).toHaveBeenLastCalledWith(expected);
+    expect(api.getAnalyticsHeatmap).toHaveBeenLastCalledWith(expected);
+    expect(api.getAnalyticsProjects).toHaveBeenLastCalledWith(expected);
+    expect(api.getAnalyticsHourOfWeek).toHaveBeenLastCalledWith(expected);
+    expect(api.getAnalyticsSessionShape).toHaveBeenLastCalledWith(expected);
+    expect(api.getAnalyticsVelocity).toHaveBeenLastCalledWith(expected);
+    expect(api.getAnalyticsTools).toHaveBeenLastCalledWith(expected);
   });
 });
 
 describe("AnalyticsStore heatmap uses full range", () => {
-  beforeEach(() => {
-    resetStore();
-    vi.clearAllMocks();
-    mockAllAPIs();
-  });
-
   it("should use base from/to for heatmap even with selectedDate", async () => {
     analytics.selectDate("2024-01-15");
     vi.clearAllMocks();
-    mockAllAPIs();
 
     await analytics.fetchHeatmap();
 
-    assertParams(
-      api.getAnalyticsHeatmap, "2024-01-01", "2024-01-31",
+    expect(api.getAnalyticsHeatmap).toHaveBeenLastCalledWith(
+      expect.objectContaining({ from: "2024-01-01", to: "2024-01-31" }),
     );
   });
 });
 
 describe("AnalyticsStore.setProject", () => {
-  beforeEach(() => {
-    resetStore();
-    vi.clearAllMocks();
-    mockAllAPIs();
-  });
-
   it("should toggle project on first click", () => {
     analytics.setProject("alpha");
     expect(analytics.project).toBe("alpha");
@@ -375,7 +317,6 @@ describe("AnalyticsStore.setProject", () => {
   it("should exclude project from fetchProjects even with selectedDate", () => {
     analytics.selectDate("2024-01-15");
     vi.clearAllMocks();
-    mockAllAPIs();
 
     analytics.setProject("alpha");
 
@@ -399,7 +340,6 @@ describe("AnalyticsStore.setProject", () => {
     ({ fn }) => {
       analytics.setProject("alpha");
       vi.clearAllMocks();
-      mockAllAPIs();
 
       analytics.setProject("alpha"); // deselect
 
