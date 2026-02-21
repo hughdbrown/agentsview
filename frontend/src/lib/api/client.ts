@@ -39,6 +39,26 @@ async function fetchJSON<T>(
   return res.json() as Promise<T>;
 }
 
+type QueryValue =
+  | string
+  | number
+  | boolean
+  | undefined
+  | null;
+
+function buildQuery(
+  params: Record<string, QueryValue>,
+): string {
+  const q = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) {
+      q.set(key, String(value));
+    }
+  }
+  const qs = q.toString();
+  return qs ? `?${qs}` : "";
+}
+
 /* Sessions */
 
 export interface ListSessionsParams {
@@ -57,19 +77,7 @@ export interface ListSessionsParams {
 export function listSessions(
   params: ListSessionsParams = {},
 ): Promise<SessionPage> {
-  const q = new URLSearchParams();
-  if (params.project) q.set("project", params.project);
-  if (params.machine) q.set("machine", params.machine);
-  if (params.agent) q.set("agent", params.agent);
-  if (params.date) q.set("date", params.date);
-  if (params.date_from) q.set("date_from", params.date_from);
-  if (params.date_to) q.set("date_to", params.date_to);
-  if (params.min_messages != null) q.set("min_messages", String(params.min_messages));
-  if (params.max_messages != null) q.set("max_messages", String(params.max_messages));
-  if (params.cursor) q.set("cursor", params.cursor);
-  if (params.limit) q.set("limit", String(params.limit));
-  const qs = q.toString();
-  return fetchJSON(`/sessions${qs ? `?${qs}` : ""}`);
+  return fetchJSON(`/sessions${buildQuery({ ...params })}`);
 }
 
 export function getSession(id: string): Promise<Session> {
@@ -88,12 +96,9 @@ export function getMessages(
   sessionId: string,
   params: GetMessagesParams = {},
 ): Promise<MessagesResponse> {
-  const q = new URLSearchParams();
-  if (params.from !== undefined) q.set("from", String(params.from));
-  if (params.limit) q.set("limit", String(params.limit));
-  if (params.direction) q.set("direction", params.direction);
-  const qs = q.toString();
-  return fetchJSON(`/sessions/${sessionId}/messages${qs ? `?${qs}` : ""}`);
+  return fetchJSON(
+    `/sessions/${sessionId}/messages${buildQuery({ ...params })}`,
+  );
 }
 
 export interface GetMinimapParams {
@@ -105,25 +110,24 @@ export function getMinimap(
   sessionId: string,
   params: GetMinimapParams = {},
 ): Promise<MinimapResponse> {
-  const q = new URLSearchParams();
-  if (params.from !== undefined) q.set("from", String(params.from));
-  if (params.max !== undefined) q.set("max", String(params.max));
-  const qs = q.toString();
-  return fetchJSON(`/sessions/${sessionId}/minimap${qs ? `?${qs}` : ""}`);
+  return fetchJSON(
+    `/sessions/${sessionId}/minimap${buildQuery({ ...params })}`,
+  );
 }
 
 /* Search */
 
 export function search(
   query: string,
-  params: { project?: string; limit?: number; cursor?: number } = {},
+  params: {
+    project?: string;
+    limit?: number;
+    cursor?: number;
+  } = {},
 ): Promise<SearchResponse> {
-  const q = new URLSearchParams();
-  q.set("q", query);
-  if (params.project) q.set("project", params.project);
-  if (params.limit) q.set("limit", String(params.limit));
-  if (params.cursor) q.set("cursor", String(params.cursor));
-  return fetchJSON(`/search?${q.toString()}`);
+  return fetchJSON(
+    `/search${buildQuery({ q: query, ...params })}`,
+  );
 }
 
 /* Metadata */
@@ -150,78 +154,88 @@ export function getSyncStatus(): Promise<SyncStatus> {
   return fetchJSON("/sync/status");
 }
 
-export interface SyncEventCallbacks {
-  onProgress?: (p: SyncProgress) => void;
-  onDone?: (s: SyncStats) => void;
-  onError?: (e: Error) => void;
+export interface SyncHandle {
+  abort: () => void;
+  done: Promise<SyncStats>;
 }
 
 export function triggerSync(
-  callbacks: SyncEventCallbacks,
-): AbortController {
+  onProgress?: (p: SyncProgress) => void,
+): SyncHandle {
   const controller = new AbortController();
 
-  fetch(`${BASE}/sync`, {
-    method: "POST",
-    signal: controller.signal,
-  })
-    .then(async (res) => {
-      if (!res.ok || !res.body) {
-        throw new Error(`Sync request failed: ${res.status}`);
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      let finished = false;
-
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        // Normalize CRLF to LF
-        buf = buf.replaceAll("\r\n", "\n");
-
-        if (processFrames(buf, callbacks)) {
-          finished = true;
-          reader.cancel();
-          break;
-        }
-        // Remove fully consumed frames
-        const last = buf.lastIndexOf("\n\n");
-        if (last !== -1) buf = buf.slice(last + 2);
-      }
-
-      // Process any trailing frame on EOF
-      if (!finished && buf.trim()) {
-        processFrame(buf, callbacks);
-      }
-    })
-    .catch((err) => {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      callbacks.onError?.(err instanceof Error ? err : new Error(String(err)));
+  const done = (async () => {
+    const res = await fetch(`${BASE}/sync`, {
+      method: "POST",
+      signal: controller.signal,
     });
 
-  return controller;
+    if (!res.ok || !res.body) {
+      throw new Error(`Sync request failed: ${res.status}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let stats: SyncStats | undefined;
+
+    for (;;) {
+      const { done: eof, value } = await reader.read();
+      if (eof) break;
+      buf += decoder.decode(value, { stream: true });
+      buf = buf.replaceAll("\r\n", "\n");
+
+      const result = processFrames(buf, onProgress);
+      if (result) {
+        stats = result;
+        reader.cancel();
+        break;
+      }
+      const last = buf.lastIndexOf("\n\n");
+      if (last !== -1) buf = buf.slice(last + 2);
+    }
+
+    if (!stats && buf.trim()) {
+      stats = processFrame(buf, onProgress);
+    }
+
+    if (!stats) {
+      throw new Error("Sync stream ended without done event");
+    }
+
+    return stats;
+  })();
+
+  return { abort: () => controller.abort(), done };
 }
 
-/** Parse all complete SSE frames in buf. Returns true if "done" was received. */
+/**
+ * Parse all complete SSE frames in buf.
+ * Returns the SyncStats if a "done" event was received, undefined otherwise.
+ */
 function processFrames(
-  buf: string, callbacks: SyncEventCallbacks,
-): boolean {
+  buf: string,
+  onProgress?: (p: SyncProgress) => void,
+): SyncStats | undefined {
   let idx: number;
   let start = 0;
   while ((idx = buf.indexOf("\n\n", start)) !== -1) {
     const frame = buf.slice(start, idx);
     start = idx + 2;
-    if (processFrame(frame, callbacks)) return true;
+    const stats = processFrame(frame, onProgress);
+    if (stats) return stats;
   }
-  return false;
+  return undefined;
 }
 
-/** Dispatch a single SSE frame. Returns true if it was a "done" event. */
+/**
+ * Dispatch a single SSE frame.
+ * Returns the SyncStats if it was a "done" event, undefined otherwise.
+ */
 function processFrame(
-  frame: string, callbacks: SyncEventCallbacks,
-): boolean {
+  frame: string,
+  onProgress?: (p: SyncProgress) => void,
+): SyncStats | undefined {
   let event = "";
   const dataLines: string[] = [];
   for (const line of frame.split("\n")) {
@@ -234,15 +248,14 @@ function processFrame(
     }
   }
   const data = dataLines.join("\n");
-  if (!data) return false;
+  if (!data) return undefined;
 
   if (event === "progress") {
-    callbacks.onProgress?.(JSON.parse(data) as SyncProgress);
+    onProgress?.(JSON.parse(data) as SyncProgress);
   } else if (event === "done") {
-    callbacks.onDone?.(JSON.parse(data) as SyncStats);
-    return true;
+    return JSON.parse(data) as SyncStats;
   }
-  return false;
+  return undefined;
 }
 
 /** Watch a session for live updates via SSE */
@@ -304,52 +317,27 @@ export interface AnalyticsParams {
   project?: string;
 }
 
-function analyticsQuery(
-  params: AnalyticsParams,
-  extra?: Record<string, string>,
-): string {
-  const q = new URLSearchParams();
-  if (params.from) q.set("from", params.from);
-  if (params.to) q.set("to", params.to);
-  if (params.timezone) q.set("timezone", params.timezone);
-  if (params.machine) q.set("machine", params.machine);
-  if (params.project) q.set("project", params.project);
-  if (extra) {
-    for (const [k, v] of Object.entries(extra)) {
-      q.set(k, v);
-    }
-  }
-  const qs = q.toString();
-  return qs ? `?${qs}` : "";
-}
-
 export function getAnalyticsSummary(
   params: AnalyticsParams,
 ): Promise<AnalyticsSummary> {
   return fetchJSON(
-    `/analytics/summary${analyticsQuery(params)}`,
+    `/analytics/summary${buildQuery({ ...params })}`,
   );
 }
 
 export function getAnalyticsActivity(
   params: AnalyticsParams & { granularity?: string },
 ): Promise<ActivityResponse> {
-  const { granularity, ...base } = params;
-  const extra: Record<string, string> = {};
-  if (granularity) extra["granularity"] = granularity;
   return fetchJSON(
-    `/analytics/activity${analyticsQuery(base, extra)}`,
+    `/analytics/activity${buildQuery({ ...params })}`,
   );
 }
 
 export function getAnalyticsHeatmap(
   params: AnalyticsParams & { metric?: string },
 ): Promise<HeatmapResponse> {
-  const { metric, ...base } = params;
-  const extra: Record<string, string> = {};
-  if (metric) extra["metric"] = metric;
   return fetchJSON(
-    `/analytics/heatmap${analyticsQuery(base, extra)}`,
+    `/analytics/heatmap${buildQuery({ ...params })}`,
   );
 }
 
@@ -357,7 +345,7 @@ export function getAnalyticsProjects(
   params: AnalyticsParams,
 ): Promise<ProjectsAnalyticsResponse> {
   return fetchJSON(
-    `/analytics/projects${analyticsQuery(params)}`,
+    `/analytics/projects${buildQuery({ ...params })}`,
   );
 }
 
@@ -365,7 +353,7 @@ export function getAnalyticsHourOfWeek(
   params: AnalyticsParams,
 ): Promise<HourOfWeekResponse> {
   return fetchJSON(
-    `/analytics/hour-of-week${analyticsQuery(params)}`,
+    `/analytics/hour-of-week${buildQuery({ ...params })}`,
   );
 }
 
@@ -373,7 +361,7 @@ export function getAnalyticsSessionShape(
   params: AnalyticsParams,
 ): Promise<SessionShapeResponse> {
   return fetchJSON(
-    `/analytics/sessions${analyticsQuery(params)}`,
+    `/analytics/sessions${buildQuery({ ...params })}`,
   );
 }
 
@@ -381,7 +369,7 @@ export function getAnalyticsVelocity(
   params: AnalyticsParams,
 ): Promise<VelocityResponse> {
   return fetchJSON(
-    `/analytics/velocity${analyticsQuery(params)}`,
+    `/analytics/velocity${buildQuery({ ...params })}`,
   );
 }
 
@@ -389,17 +377,14 @@ export function getAnalyticsTools(
   params: AnalyticsParams,
 ): Promise<ToolsAnalyticsResponse> {
   return fetchJSON(
-    `/analytics/tools${analyticsQuery(params)}`,
+    `/analytics/tools${buildQuery({ ...params })}`,
   );
 }
 
 export function getAnalyticsTopSessions(
   params: AnalyticsParams & { metric?: string },
 ): Promise<TopSessionsResponse> {
-  const { metric, ...base } = params;
-  const extra: Record<string, string> = {};
-  if (metric) extra["metric"] = metric;
   return fetchJSON(
-    `/analytics/top-sessions${analyticsQuery(base, extra)}`,
+    `/analytics/top-sessions${buildQuery({ ...params })}`,
   );
 }

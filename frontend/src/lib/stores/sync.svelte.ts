@@ -96,23 +96,29 @@ class SyncStore {
     this.syncing = true;
     this.progress = null;
 
-    api.triggerSync({
-      onProgress: (p: SyncProgress) => {
-        this.progress = p;
-      },
-      onDone: (s: SyncStats) => {
+    const handle = api.triggerSync((p: SyncProgress) => {
+      this.progress = p;
+    });
+
+    handle.done
+      .then((s: SyncStats) => {
         this.lastSyncStats = s;
         this.lastSync = new Date().toISOString();
         this.syncing = false;
         this.progress = null;
         this.loadStats();
         onComplete?.();
-      },
-      onError: () => {
+      })
+      .catch((err: unknown) => {
+        if (
+          err instanceof DOMException &&
+          err.name === "AbortError"
+        ) {
+          return;
+        }
         this.syncing = false;
         this.progress = null;
-      },
-    });
+      });
   }
 
   watchSession(sessionId: string, onUpdate: () => void) {
