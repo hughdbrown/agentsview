@@ -49,7 +49,7 @@
     const loading = messages.loading;
     const showThinking = ui.showThinking;
     untrack(() => {
-      if (ordinal < 0 || loading || !messageListRef) return;
+      if (ordinal === null || loading || !messageListRef) return;
 
       const items = messageListRef.getDisplayItems();
       const found = items.some((item) =>
@@ -70,7 +70,7 @@
       }
 
       messageListRef.scrollToOrdinal(ordinal);
-      ui.pendingScrollOrdinal = -1;
+      ui.pendingScrollOrdinal = null;
     });
   });
 
@@ -82,7 +82,8 @@
       ? [...items].reverse()
       : items;
 
-    if (ui.selectedOrdinal < 0) {
+    const selected = ui.selectedOrdinal;
+    if (selected === null) {
       const first = sorted[0]!;
       ui.selectOrdinal(first.ordinals[0]!);
       messageListRef?.scrollToOrdinal(first.ordinals[0]!);
@@ -90,7 +91,7 @@
     }
 
     const curIdx = sorted.findIndex((item) =>
-      item.ordinals.includes(ui.selectedOrdinal),
+      item.ordinals.includes(selected),
     );
     const nextIdx = Math.max(
       0,
@@ -148,14 +149,14 @@
 
 <StatusBar />
 
-{#if ui.commandPaletteOpen}
+{#if ui.activeModal === "commandPalette"}
   <CommandPalette />
 {/if}
 
-{#if ui.shortcutsModalOpen}
+{#if ui.activeModal === "shortcuts"}
   <ShortcutsModal />
 {/if}
 
-{#if ui.publishModalOpen}
+{#if ui.activeModal === "publish"}
   <PublishModal />
 {/if}

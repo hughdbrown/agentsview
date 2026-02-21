@@ -1,16 +1,21 @@
 type Theme = "light" | "dark";
+type ModalType =
+  | "commandPalette"
+  | "shortcuts"
+  | "publish"
+  | null;
 
 class UIStore {
   theme: Theme = $state(
-    (localStorage.getItem("theme") as Theme) || "light",
+    (typeof localStorage !== "undefined"
+      ? (localStorage.getItem("theme") as Theme)
+      : null) || "light",
   );
   showThinking: boolean = $state(true);
   sortNewestFirst: boolean = $state(true);
-  commandPaletteOpen: boolean = $state(false);
-  shortcutsModalOpen: boolean = $state(false);
-  publishModalOpen: boolean = $state(false);
-  selectedOrdinal: number = $state(-1);
-  pendingScrollOrdinal: number = $state(-1);
+  activeModal: ModalType = $state(null);
+  selectedOrdinal: number | null = $state(null);
+  pendingScrollOrdinal: number | null = $state(null);
 
   constructor() {
     $effect.root(() => {
@@ -38,36 +43,12 @@ class UIStore {
     this.sortNewestFirst = !this.sortNewestFirst;
   }
 
-  openCommandPalette() {
-    this.commandPaletteOpen = true;
-  }
-
-  closeCommandPalette() {
-    this.commandPaletteOpen = false;
-  }
-
-  openShortcutsModal() {
-    this.shortcutsModalOpen = true;
-  }
-
-  closeShortcutsModal() {
-    this.shortcutsModalOpen = false;
-  }
-
-  openPublishModal() {
-    this.publishModalOpen = true;
-  }
-
-  closePublishModal() {
-    this.publishModalOpen = false;
-  }
-
   selectOrdinal(ordinal: number) {
     this.selectedOrdinal = ordinal;
   }
 
   clearSelection() {
-    this.selectedOrdinal = -1;
+    this.selectedOrdinal = null;
   }
 
   scrollToOrdinal(ordinal: number) {
@@ -76,9 +57,7 @@ class UIStore {
   }
 
   closeAll() {
-    this.commandPaletteOpen = false;
-    this.shortcutsModalOpen = false;
-    this.publishModalOpen = false;
+    this.activeModal = null;
   }
 }
 

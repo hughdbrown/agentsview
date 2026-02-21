@@ -98,7 +98,7 @@
   function close() {
     inputValue = "";
     searchStore.clear();
-    ui.closeCommandPalette();
+    ui.activeModal = null;
   }
 
   function handleOverlayClick(e: MouseEvent) {

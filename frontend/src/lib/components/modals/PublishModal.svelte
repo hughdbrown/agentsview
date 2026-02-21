@@ -72,7 +72,7 @@
         "publish-overlay",
       )
     ) {
-      ui.closePublishModal();
+      ui.activeModal = null;
     }
   }
 
@@ -84,7 +84,7 @@
   class="publish-overlay"
   onclick={handleOverlayClick}
   onkeydown={(e) => {
-    if (e.key === "Escape") ui.closePublishModal();
+    if (e.key === "Escape") ui.activeModal = null;
   }}
 >
   <div class="publish-modal">
@@ -92,7 +92,7 @@
       <h3 class="modal-title">Publish to GitHub Gist</h3>
       <button
         class="close-btn"
-        onclick={() => ui.closePublishModal()}
+        onclick={() => ui.activeModal = null}
       >
         &times;
       </button>
@@ -188,7 +188,7 @@
             </button>
             <button
               class="btn"
-              onclick={() => ui.closePublishModal()}
+              onclick={() => ui.activeModal = null}
             >
               Close
             </button>
@@ -204,7 +204,7 @@
             </button>
             <button
               class="btn"
-              onclick={() => ui.closePublishModal()}
+              onclick={() => ui.activeModal = null}
             >
               Close
             </button>

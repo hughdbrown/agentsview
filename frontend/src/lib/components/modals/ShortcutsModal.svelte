@@ -22,7 +22,7 @@
         "shortcuts-overlay",
       )
     ) {
-      ui.closeShortcutsModal();
+      ui.activeModal = null;
     }
   }
 </script>
@@ -32,7 +32,7 @@
   class="shortcuts-overlay"
   onclick={handleOverlayClick}
   onkeydown={(e) => {
-    if (e.key === "Escape") ui.closeShortcutsModal();
+    if (e.key === "Escape") ui.activeModal = null;
   }}
 >
   <div class="shortcuts-modal">
@@ -40,7 +40,7 @@
       <h3 class="shortcuts-title">Keyboard Shortcuts</h3>
       <button
         class="close-btn"
-        onclick={() => ui.closeShortcutsModal()}
+        onclick={() => ui.activeModal = null}
       >
         &times;
       </button>

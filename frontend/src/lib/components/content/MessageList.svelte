@@ -230,9 +230,8 @@
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="virtual-row"
-            class:selected={item.ordinals.includes(
-              ui.selectedOrdinal,
-            )}
+            class:selected={ui.selectedOrdinal !== null &&
+              item.ordinals.includes(ui.selectedOrdinal)}
             data-index={row.index}
             style="position: absolute; top: 0; left: 0; width: 100%; transform: translateY({row.start}px);"
             use:measureElement={virtualizer.instance}

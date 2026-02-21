@@ -32,22 +32,17 @@ export function registerShortcuts(
     // Cmd+K — always works
     if (meta && e.key === "k") {
       e.preventDefault();
-      if (ui.commandPaletteOpen) {
-        ui.closeCommandPalette();
-      } else {
-        ui.openCommandPalette();
-      }
+      ui.activeModal =
+        ui.activeModal === "commandPalette"
+          ? null
+          : "commandPalette";
       return;
     }
 
     // Esc — always works
     if (e.key === "Escape") {
-      if (ui.commandPaletteOpen) {
-        ui.closeCommandPalette();
-      } else if (ui.publishModalOpen) {
-        ui.closePublishModal();
-      } else if (ui.shortcutsModalOpen) {
-        ui.closeShortcutsModal();
+      if (ui.activeModal !== null) {
+        ui.activeModal = null;
       } else if (
         sessions.activeSessionId &&
         !isInputFocused()
@@ -58,11 +53,7 @@ export function registerShortcuts(
     }
 
     // All other shortcuts: skip when modal open or input focused
-    if (
-      ui.commandPaletteOpen ||
-      ui.publishModalOpen ||
-      isInputFocused()
-    ) return;
+    if (ui.activeModal !== null || isInputFocused()) return;
 
     switch (e.key) {
       case "j":
@@ -109,12 +100,12 @@ export function registerShortcuts(
       case "p":
         e.preventDefault();
         if (sessions.activeSessionId) {
-          ui.openPublishModal();
+          ui.activeModal = "publish";
         }
         break;
       case "?":
         e.preventDefault();
-        ui.openShortcutsModal();
+        ui.activeModal = "shortcuts";
         break;
     }
   }

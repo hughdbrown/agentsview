@@ -72,7 +72,7 @@
 
   <button
     class="search-hint"
-    onclick={() => ui.openCommandPalette()}
+    onclick={() => (ui.activeModal = "commandPalette")}
     title="Search sessions ({modKey}+K)"
   >
     <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
@@ -128,7 +128,7 @@
 
       <button
         class="header-btn"
-        onclick={() => ui.openPublishModal()}
+        onclick={() => (ui.activeModal = "publish")}
         disabled={!sessions.activeSessionId}
         title="Publish to Gist (p)"
         aria-label="Publish to Gist"
@@ -171,7 +171,7 @@
 
     <button
       class="header-btn"
-      onclick={() => ui.openShortcutsModal()}
+      onclick={() => (ui.activeModal = "shortcuts")}
       title="Keyboard shortcuts (?)"
     >
       ?
