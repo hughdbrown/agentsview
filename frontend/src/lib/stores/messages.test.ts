@@ -444,14 +444,20 @@ describe('MessagesStore', () => {
       const p1 = messages.loadOlder();
 
       // ensureOrdinalLoaded should wait for the in-flight
-      // loadOlder before starting its own fetch
-      const olderChunk = Array.from(
+      // loadOlder before starting its own fetch. After
+      // loadOlder resolves (800-899), ensureOrdinal needs
+      // data further back (700-799).
+      const ensureChunk = Array.from(
         { length: 100 },
-        (_, i) => makeMessage(899 - i),
+        (_, i) => makeMessage(799 - i),
       );
-      vi.mocked(api.getMessages).mockResolvedValueOnce(
-        makeMessagesResponse(olderChunk),
-      );
+      vi.mocked(api.getMessages)
+        .mockResolvedValueOnce(
+          makeMessagesResponse(ensureChunk),
+        )
+        .mockResolvedValueOnce(
+          makeMessagesResponse([]),
+        );
 
       const p2 = messages.ensureOrdinalLoaded(0);
 
@@ -473,6 +479,15 @@ describe('MessagesStore', () => {
 
       // Both completed without errors; loadingOlder is reset
       expect(messages.loadingOlder).toBe(false);
+
+      // Ordinals should be strictly ascending with no duplicates
+      const ordinals = messages.messages.map(
+        (m) => m.ordinal,
+      );
+      for (let i = 1; i < ordinals.length; i++) {
+        expect(ordinals[i]).toBeGreaterThan(ordinals[i - 1]!);
+      }
+      expect(new Set(ordinals).size).toBe(ordinals.length);
     });
 
     it('should not allow overlapping loadOlder calls', async () => {
@@ -505,6 +520,94 @@ describe('MessagesStore', () => {
       await Promise.all([p1, p2]);
 
       expect(messages.loadingOlder).toBe(false);
+
+      // Ordinals should be strictly ascending with no duplicates
+      const ordinals = messages.messages.map(
+        (m) => m.ordinal,
+      );
+      for (let i = 1; i < ordinals.length; i++) {
+        expect(ordinals[i]).toBeGreaterThan(ordinals[i - 1]!);
+      }
+      expect(new Set(ordinals).size).toBe(ordinals.length);
+    });
+
+    it('should not let stale loadOlder promise clear a newer session loadOlderPromise', async () => {
+      await setupProgressiveSession();
+
+      // Start loadOlder for session A — hangs
+      const {
+        promise: s1Hang,
+        resolve: resolveS1,
+      } = createDeferred<MessagesResponse>();
+      vi.mocked(api.getMessages).mockReturnValueOnce(
+        s1Hang as ReturnType<typeof api.getMessages>,
+      );
+
+      const p1 = messages.loadOlder();
+
+      // Switch to session B (progressive)
+      const s2Count = 25_000;
+      vi.mocked(api.getSession).mockResolvedValue(
+        makeSession('s2', s2Count),
+      );
+      const s2DescPage = Array.from(
+        { length: 100 },
+        (_, i) => makeMessage(999 - i),
+      );
+      vi.mocked(api.getMessages).mockResolvedValueOnce(
+        makeMessagesResponse(s2DescPage),
+      );
+      await messages.loadSession('s2');
+      expect(messages.hasOlder).toBe(true);
+
+      // Start loadOlder for session B — hangs
+      const {
+        promise: s2Hang,
+        resolve: resolveS2,
+      } = createDeferred<MessagesResponse>();
+      vi.mocked(api.getMessages).mockReturnValueOnce(
+        s2Hang as ReturnType<typeof api.getMessages>,
+      );
+
+      const p2 = messages.loadOlder();
+
+      // Resolve the stale session A promise — this must NOT
+      // clear loadOlderPromise, which now belongs to session B
+      const s1Chunk = Array.from(
+        { length: 100 },
+        (_, i) => makeMessage(899 - i),
+      );
+      resolveS1(makeMessagesResponse(s1Chunk));
+      await p1;
+
+      // Session B's loadOlder should still be recognized as
+      // in-flight: a third loadOlder call should return the
+      // existing promise, not start a new one
+      const callsBefore =
+        vi.mocked(api.getMessages).mock.calls.length;
+      const p3 = messages.loadOlder();
+      expect(
+        vi.mocked(api.getMessages).mock.calls.length,
+      ).toBe(callsBefore);
+
+      // Resolve session B's loadOlder
+      const s2Chunk = Array.from(
+        { length: 100 },
+        (_, i) => makeMessage(899 - i),
+      );
+      resolveS2(makeMessagesResponse(s2Chunk));
+      await Promise.all([p2, p3]);
+
+      expect(messages.loadingOlder).toBe(false);
+
+      // Ordinals should be strictly ascending with no duplicates
+      const ordinals = messages.messages.map(
+        (m) => m.ordinal,
+      );
+      for (let i = 1; i < ordinals.length; i++) {
+        expect(ordinals[i]).toBeGreaterThan(ordinals[i - 1]!);
+      }
+      expect(new Set(ordinals).size).toBe(ordinals.length);
     });
 
     it('should not surface abort error from ensureOrdinalLoaded on session switch', async () => {

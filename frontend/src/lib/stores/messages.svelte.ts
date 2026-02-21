@@ -240,12 +240,13 @@ class MessagesStore {
       return this.loadOlderPromise ?? undefined;
     }
 
-    this.loadOlderPromise = this.doLoadOlder().finally(
-      () => {
+    const p = this.doLoadOlder().finally(() => {
+      if (this.loadOlderPromise === p) {
         this.loadOlderPromise = null;
-      },
-    );
-    return this.loadOlderPromise;
+      }
+    });
+    this.loadOlderPromise = p;
+    return p;
   }
 
   private async doLoadOlder() {
@@ -305,13 +306,16 @@ class MessagesStore {
       if (this.messages[0]!.ordinal <= targetOrdinal) return;
     }
 
-    this.loadOlderPromise = this.doEnsureOrdinal(
+    const p = this.doEnsureOrdinal(
       id,
       targetOrdinal,
     ).finally(() => {
-      this.loadOlderPromise = null;
+      if (this.loadOlderPromise === p) {
+        this.loadOlderPromise = null;
+      }
     });
-    return this.loadOlderPromise;
+    this.loadOlderPromise = p;
+    return p;
   }
 
   private async doEnsureOrdinal(
