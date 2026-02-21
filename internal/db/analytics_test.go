@@ -607,7 +607,13 @@ func TestAnalyticsCanceledContext(t *testing.T) {
 			return err
 		}},
 		{"Tools", func() error {
-			_, err := d.GetAnalyticsTools(ctx, f, "")
+			_, err := d.GetAnalyticsTools(ctx, f)
+			return err
+		}},
+		{"TopSessions", func() error {
+			_, err := d.GetAnalyticsTopSessions(
+				ctx, f, "messages",
+			)
 			return err
 		}},
 	}
@@ -1524,9 +1530,7 @@ func TestGetAnalyticsTools(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("EmptyDB", func(t *testing.T) {
-		resp, err := d.GetAnalyticsTools(
-			ctx, baseFilter(), "",
-		)
+		resp, err := d.GetAnalyticsTools(ctx, baseFilter())
 		if err != nil {
 			t.Fatalf("GetAnalyticsTools: %v", err)
 		}
@@ -1578,9 +1582,7 @@ func TestGetAnalyticsTools(t *testing.T) {
 	insertMessages(t, d, m4)
 
 	t.Run("TotalCalls", func(t *testing.T) {
-		resp, err := d.GetAnalyticsTools(
-			ctx, baseFilter(), "",
-		)
+		resp, err := d.GetAnalyticsTools(ctx, baseFilter())
 		if err != nil {
 			t.Fatalf("GetAnalyticsTools: %v", err)
 		}
@@ -1592,9 +1594,7 @@ func TestGetAnalyticsTools(t *testing.T) {
 	})
 
 	t.Run("ByCategory", func(t *testing.T) {
-		resp, err := d.GetAnalyticsTools(
-			ctx, baseFilter(), "",
-		)
+		resp, err := d.GetAnalyticsTools(ctx, baseFilter())
 		if err != nil {
 			t.Fatalf("GetAnalyticsTools: %v", err)
 		}
@@ -1622,9 +1622,7 @@ func TestGetAnalyticsTools(t *testing.T) {
 	})
 
 	t.Run("ByCategoryPct", func(t *testing.T) {
-		resp, err := d.GetAnalyticsTools(
-			ctx, baseFilter(), "",
-		)
+		resp, err := d.GetAnalyticsTools(ctx, baseFilter())
 		if err != nil {
 			t.Fatalf("GetAnalyticsTools: %v", err)
 		}
@@ -1636,9 +1634,7 @@ func TestGetAnalyticsTools(t *testing.T) {
 	})
 
 	t.Run("ByAgent", func(t *testing.T) {
-		resp, err := d.GetAnalyticsTools(
-			ctx, baseFilter(), "",
-		)
+		resp, err := d.GetAnalyticsTools(ctx, baseFilter())
 		if err != nil {
 			t.Fatalf("GetAnalyticsTools: %v", err)
 		}
@@ -1666,9 +1662,7 @@ func TestGetAnalyticsTools(t *testing.T) {
 	})
 
 	t.Run("Trend", func(t *testing.T) {
-		resp, err := d.GetAnalyticsTools(
-			ctx, baseFilter(), "",
-		)
+		resp, err := d.GetAnalyticsTools(ctx, baseFilter())
 		if err != nil {
 			t.Fatalf("GetAnalyticsTools: %v", err)
 		}
@@ -1690,9 +1684,9 @@ func TestGetAnalyticsTools(t *testing.T) {
 	})
 
 	t.Run("ProjectFilter", func(t *testing.T) {
-		resp, err := d.GetAnalyticsTools(
-			ctx, baseFilter(), "alpha",
-		)
+		f := baseFilter()
+		f.Project = "alpha"
+		resp, err := d.GetAnalyticsTools(ctx, f)
 		if err != nil {
 			t.Fatalf("GetAnalyticsTools: %v", err)
 		}
@@ -1704,7 +1698,7 @@ func TestGetAnalyticsTools(t *testing.T) {
 
 	t.Run("EmptyDateRange", func(t *testing.T) {
 		resp, err := d.GetAnalyticsTools(
-			ctx, emptyFilter(), "",
+			ctx, emptyFilter(),
 		)
 		if err != nil {
 			t.Fatalf("GetAnalyticsTools: %v", err)
@@ -1719,7 +1713,7 @@ func TestGetAnalyticsTools(t *testing.T) {
 func TestGetAnalyticsToolsCanceled(t *testing.T) {
 	d := testDB(t)
 	ctx := canceledCtx()
-	_, err := d.GetAnalyticsTools(ctx, baseFilter(), "")
+	_, err := d.GetAnalyticsTools(ctx, baseFilter())
 	requireCanceledErr(t, err)
 }
 
@@ -1759,6 +1753,150 @@ func TestActivityToolAndThinkingCounts(t *testing.T) {
 		t.Errorf("ToolCalls = %d, want 2",
 			entry.ToolCalls)
 	}
+}
+
+func TestGetAnalyticsTopSessions(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	t.Run("EmptyDB", func(t *testing.T) {
+		resp, err := d.GetAnalyticsTopSessions(
+			ctx, baseFilter(), "messages",
+		)
+		if err != nil {
+			t.Fatalf("GetAnalyticsTopSessions: %v", err)
+		}
+		if len(resp.Sessions) != 0 {
+			t.Errorf("len(Sessions) = %d, want 0",
+				len(resp.Sessions))
+		}
+		if resp.Metric != "messages" {
+			t.Errorf("Metric = %q, want messages",
+				resp.Metric)
+		}
+	})
+
+	seedAnalyticsData(t, d)
+
+	t.Run("ByMessages", func(t *testing.T) {
+		resp, err := d.GetAnalyticsTopSessions(
+			ctx, baseFilter(), "messages",
+		)
+		if err != nil {
+			t.Fatalf("GetAnalyticsTopSessions: %v", err)
+		}
+		if len(resp.Sessions) != 5 {
+			t.Fatalf("len(Sessions) = %d, want 5",
+				len(resp.Sessions))
+		}
+		// First should be the session with most messages (b1=30)
+		if resp.Sessions[0].MessageCount != 30 {
+			t.Errorf("top session messages = %d, want 30",
+				resp.Sessions[0].MessageCount)
+		}
+		if resp.Sessions[0].Project != "project-beta" {
+			t.Errorf("top session project = %q, want project-beta",
+				resp.Sessions[0].Project)
+		}
+	})
+
+	t.Run("ByDuration", func(t *testing.T) {
+		resp, err := d.GetAnalyticsTopSessions(
+			ctx, baseFilter(), "duration",
+		)
+		if err != nil {
+			t.Fatalf("GetAnalyticsTopSessions: %v", err)
+		}
+		if resp.Metric != "duration" {
+			t.Errorf("Metric = %q, want duration",
+				resp.Metric)
+		}
+		// All seeded sessions have 1h duration except a1
+		// which runs from 09:00 to midyear
+		if len(resp.Sessions) == 0 {
+			t.Fatal("expected non-empty sessions")
+		}
+		// All sessions should have positive duration
+		for _, s := range resp.Sessions {
+			if s.DurationMin <= 0 {
+				t.Errorf("session %s duration = %f, want > 0",
+					s.ID, s.DurationMin)
+			}
+		}
+	})
+
+	t.Run("DefaultMetric", func(t *testing.T) {
+		resp, err := d.GetAnalyticsTopSessions(
+			ctx, baseFilter(), "",
+		)
+		if err != nil {
+			t.Fatalf("GetAnalyticsTopSessions: %v", err)
+		}
+		if resp.Metric != "messages" {
+			t.Errorf("Metric = %q, want messages",
+				resp.Metric)
+		}
+	})
+
+	t.Run("ProjectFilter", func(t *testing.T) {
+		f := baseFilter()
+		f.Project = "project-alpha"
+		resp, err := d.GetAnalyticsTopSessions(
+			ctx, f, "messages",
+		)
+		if err != nil {
+			t.Fatalf("GetAnalyticsTopSessions: %v", err)
+		}
+		if len(resp.Sessions) != 3 {
+			t.Errorf("len(Sessions) = %d, want 3",
+				len(resp.Sessions))
+		}
+		for _, s := range resp.Sessions {
+			if s.Project != "project-alpha" {
+				t.Errorf("session project = %q, want project-alpha",
+					s.Project)
+			}
+		}
+	})
+
+	t.Run("EmptyDateRange", func(t *testing.T) {
+		resp, err := d.GetAnalyticsTopSessions(
+			ctx, emptyFilter(), "messages",
+		)
+		if err != nil {
+			t.Fatalf("GetAnalyticsTopSessions: %v", err)
+		}
+		if len(resp.Sessions) != 0 {
+			t.Errorf("len(Sessions) = %d, want 0",
+				len(resp.Sessions))
+		}
+	})
+}
+
+func TestBuildWhereProjectFilter(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedAnalyticsData(t, d)
+
+	t.Run("SummaryWithProject", func(t *testing.T) {
+		f := baseFilter()
+		f.Project = "project-alpha"
+		s := mustSummary(t, d, ctx, f)
+		if s.TotalSessions != 3 {
+			t.Errorf("TotalSessions = %d, want 3",
+				s.TotalSessions)
+		}
+	})
+
+	t.Run("SummaryWithNonexistentProject", func(t *testing.T) {
+		f := baseFilter()
+		f.Project = "nonexistent"
+		s := mustSummary(t, d, ctx, f)
+		if s.TotalSessions != 0 {
+			t.Errorf("TotalSessions = %d, want 0",
+				s.TotalSessions)
+		}
+	})
 }
 
 func TestLocalTime(t *testing.T) {

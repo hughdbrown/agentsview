@@ -257,6 +257,19 @@ export interface VelocityResponse {
   by_complexity: VelocityBreakdown[];
 }
 
+export interface TopSession {
+  id: string;
+  project: string;
+  first_message: string | null;
+  message_count: number;
+  duration_min: number;
+}
+
+export interface TopSessionsResponse {
+  metric: string;
+  sessions: TopSession[];
+}
+
 export interface ToolCategoryCount {
   category: string;
   count: number;

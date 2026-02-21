@@ -256,7 +256,7 @@ func (db *DB) ListSessions(
 	if f.Cursor != "" {
 		cursorWhere += ` AND (
 				COALESCE(ended_at, started_at, created_at), id
-			) < (?, ?)`
+			) > (?, ?)`
 		cursorArgs = append(cursorArgs, cur.EndedAt, cur.ID)
 	}
 
@@ -264,7 +264,7 @@ func (db *DB) ListSessions(
 		" FROM sessions WHERE " + cursorWhere + `
 		ORDER BY COALESCE(
 			ended_at, started_at, created_at
-		) DESC, id DESC
+		) ASC, id ASC
 		LIMIT ?`
 	cursorArgs = append(cursorArgs, f.Limit+1)
 

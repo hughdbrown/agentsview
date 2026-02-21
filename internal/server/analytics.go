@@ -66,6 +66,7 @@ func parseAnalyticsFilter(
 		From:     from,
 		To:       to,
 		Machine:  q.Get("machine"),
+		Project:  q.Get("project"),
 		Timezone: tz,
 	}, true
 }
@@ -244,11 +245,7 @@ func (s *Server) handleAnalyticsTools(
 		return
 	}
 
-	project := r.URL.Query().Get("project")
-
-	result, err := s.db.GetAnalyticsTools(
-		r.Context(), f, project,
-	)
+	result, err := s.db.GetAnalyticsTools(r.Context(), f)
 	if err != nil {
 		if handleContextError(w, err) {
 			return
@@ -272,6 +269,43 @@ func (s *Server) handleAnalyticsVelocity(
 
 	result, err := s.db.GetAnalyticsVelocity(
 		r.Context(), f,
+	)
+	if err != nil {
+		if handleContextError(w, err) {
+			return
+		}
+		log.Printf("analytics error: %v", err)
+		writeError(w, http.StatusInternalServerError,
+			"internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleAnalyticsTopSessions(
+	w http.ResponseWriter, r *http.Request,
+) {
+	f, ok := parseAnalyticsFilter(w, r)
+	if !ok {
+		return
+	}
+
+	metric := r.URL.Query().Get("metric")
+	if metric == "" {
+		metric = "messages"
+	}
+	switch metric {
+	case "messages", "duration":
+		// valid
+	default:
+		writeError(w, http.StatusBadRequest,
+			"invalid metric: must be messages or duration")
+		return
+	}
+
+	result, err := s.db.GetAnalyticsTopSessions(
+		r.Context(), f, metric,
 	)
 	if err != nil {
 		if handleContextError(w, err) {

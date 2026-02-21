@@ -48,6 +48,7 @@ type AnalyticsFilter struct {
 	From     string // ISO date YYYY-MM-DD, inclusive
 	To       string // ISO date YYYY-MM-DD, inclusive
 	Machine  string // optional machine filter
+	Project  string // optional project filter
 	Timezone string // IANA timezone for day bucketing
 }
 
@@ -102,6 +103,11 @@ func (f AnalyticsFilter) buildWhere(
 	if f.Machine != "" {
 		preds = append(preds, "machine = ?")
 		args = append(args, f.Machine)
+	}
+
+	if f.Project != "" {
+		preds = append(preds, "project = ?")
+		args = append(args, f.Project)
 	}
 
 	return strings.Join(preds, " AND "), args
@@ -1150,16 +1156,11 @@ type ToolsAnalyticsResponse struct {
 // GetAnalyticsTools returns tool usage analytics aggregated
 // from the tool_calls table.
 func (db *DB) GetAnalyticsTools(
-	ctx context.Context, f AnalyticsFilter, project string,
+	ctx context.Context, f AnalyticsFilter,
 ) (ToolsAnalyticsResponse, error) {
 	loc := f.location()
 	dateCol := "COALESCE(started_at, created_at)"
 	where, args := f.buildWhere(dateCol)
-
-	if project != "" {
-		where += " AND project = ?"
-		args = append(args, project)
-	}
 
 	// Fetch filtered session IDs and their metadata.
 	sessQ := `SELECT id, ` + dateCol + `, agent
@@ -1752,4 +1753,106 @@ func (db *DB) GetAnalyticsVelocity(
 	}
 
 	return resp, nil
+}
+
+// --- Top Sessions ---
+
+// TopSession holds summary info for a ranked session.
+type TopSession struct {
+	ID           string  `json:"id"`
+	Project      string  `json:"project"`
+	FirstMessage *string `json:"first_message"`
+	MessageCount int     `json:"message_count"`
+	DurationMin  float64 `json:"duration_min"`
+}
+
+// TopSessionsResponse wraps the top sessions list.
+type TopSessionsResponse struct {
+	Metric   string       `json:"metric"`
+	Sessions []TopSession `json:"sessions"`
+}
+
+// GetAnalyticsTopSessions returns the top 10 sessions by the
+// given metric ("messages" or "duration") within the filter.
+func (db *DB) GetAnalyticsTopSessions(
+	ctx context.Context, f AnalyticsFilter, metric string,
+) (TopSessionsResponse, error) {
+	if metric == "" {
+		metric = "messages"
+	}
+	loc := f.location()
+	dateCol := "COALESCE(started_at, created_at)"
+	where, args := f.buildWhere(dateCol)
+
+	var orderExpr string
+	switch metric {
+	case "duration":
+		orderExpr = `(julianday(ended_at) -
+			julianday(started_at)) * 1440 DESC`
+		where += " AND started_at IS NOT NULL" +
+			" AND ended_at IS NOT NULL"
+	default:
+		metric = "messages"
+		orderExpr = "message_count DESC"
+	}
+
+	query := `SELECT id, ` + dateCol + `, project,
+		first_message, message_count,
+		started_at, ended_at
+		FROM sessions WHERE ` + where +
+		` ORDER BY ` + orderExpr + ` LIMIT 10`
+
+	rows, err := db.reader.QueryContext(ctx, query, args...)
+	if err != nil {
+		return TopSessionsResponse{},
+			fmt.Errorf("querying top sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []TopSession
+	for rows.Next() {
+		var id, ts, project string
+		var firstMsg, startedAt, endedAt *string
+		var mc int
+		if err := rows.Scan(
+			&id, &ts, &project, &firstMsg,
+			&mc, &startedAt, &endedAt,
+		); err != nil {
+			return TopSessionsResponse{},
+				fmt.Errorf("scanning top session: %w", err)
+		}
+		date := localDate(ts, loc)
+		if !inDateRange(date, f.From, f.To) {
+			continue
+		}
+		durMin := 0.0
+		if startedAt != nil && endedAt != nil {
+			tS, okS := localTime(*startedAt, loc)
+			tE, okE := localTime(*endedAt, loc)
+			if okS && okE {
+				durMin = math.Round(
+					tE.Sub(tS).Minutes()*10) / 10
+			}
+		}
+		sessions = append(sessions, TopSession{
+			ID:           id,
+			Project:      project,
+			FirstMessage: firstMsg,
+			MessageCount: mc,
+			DurationMin:  durMin,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return TopSessionsResponse{},
+			fmt.Errorf("iterating top sessions: %w", err)
+	}
+
+	if sessions == nil {
+		sessions = []TopSession{}
+	}
+
+	return TopSessionsResponse{
+		Metric:   metric,
+		Sessions: sessions,
+	}, nil
 }

@@ -146,6 +146,7 @@ func TestAnalyticsErrorRedaction(t *testing.T) {
 		"/api/v1/analytics/sessions" + analyticsRange,
 		"/api/v1/analytics/velocity" + analyticsRange,
 		"/api/v1/analytics/tools" + analyticsRange,
+		"/api/v1/analytics/top-sessions" + analyticsRange,
 	}
 	for _, ep := range endpoints {
 		t.Run(ep, func(t *testing.T) {
@@ -442,6 +443,80 @@ func TestAnalyticsTools(t *testing.T) {
 
 	t.Run("DefaultDateRange", func(t *testing.T) {
 		w := te.get(t, "/api/v1/analytics/tools")
+		assertStatus(t, w, http.StatusOK)
+	})
+}
+
+func TestAnalyticsTopSessions(t *testing.T) {
+	te := setup(t)
+	seedAnalyticsEnv(t, te)
+
+	t.Run("ByMessages", func(t *testing.T) {
+		w := te.get(t,
+			"/api/v1/analytics/top-sessions"+analyticsRange+
+				"&metric=messages&timezone=UTC")
+		assertStatus(t, w, http.StatusOK)
+
+		resp := decode[db.TopSessionsResponse](t, w)
+		if resp.Metric != "messages" {
+			t.Errorf("Metric = %q, want messages",
+				resp.Metric)
+		}
+		if len(resp.Sessions) == 0 {
+			t.Error("expected non-empty sessions")
+		}
+	})
+
+	t.Run("ByDuration", func(t *testing.T) {
+		w := te.get(t,
+			"/api/v1/analytics/top-sessions"+analyticsRange+
+				"&metric=duration&timezone=UTC")
+		assertStatus(t, w, http.StatusOK)
+
+		resp := decode[db.TopSessionsResponse](t, w)
+		if resp.Metric != "duration" {
+			t.Errorf("Metric = %q, want duration",
+				resp.Metric)
+		}
+	})
+
+	t.Run("DefaultMetric", func(t *testing.T) {
+		w := te.get(t,
+			"/api/v1/analytics/top-sessions"+analyticsRange)
+		assertStatus(t, w, http.StatusOK)
+
+		resp := decode[db.TopSessionsResponse](t, w)
+		if resp.Metric != "messages" {
+			t.Errorf("default metric = %q, want messages",
+				resp.Metric)
+		}
+	})
+
+	t.Run("InvalidMetric", func(t *testing.T) {
+		w := te.get(t,
+			"/api/v1/analytics/top-sessions?metric=bytes")
+		assertStatus(t, w, http.StatusBadRequest)
+	})
+
+	t.Run("WithProjectFilter", func(t *testing.T) {
+		w := te.get(t,
+			"/api/v1/analytics/top-sessions"+analyticsRange+
+				"&project=alpha&timezone=UTC")
+		assertStatus(t, w, http.StatusOK)
+
+		resp := decode[db.TopSessionsResponse](t, w)
+		for _, s := range resp.Sessions {
+			if s.Project != "alpha" {
+				t.Errorf(
+					"session project = %q, want alpha",
+					s.Project,
+				)
+			}
+		}
+	})
+
+	t.Run("DefaultDateRange", func(t *testing.T) {
+		w := te.get(t, "/api/v1/analytics/top-sessions")
 		assertStatus(t, w, http.StatusOK)
 	})
 }

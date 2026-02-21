@@ -22,6 +22,7 @@ import type {
   SessionShapeResponse,
   VelocityResponse,
   ToolsAnalyticsResponse,
+  TopSessionsResponse,
 } from "./types.js";
 
 const BASE = "/api/v1";
@@ -300,6 +301,7 @@ export interface AnalyticsParams {
   to?: string;
   timezone?: string;
   machine?: string;
+  project?: string;
 }
 
 function analyticsQuery(
@@ -311,6 +313,7 @@ function analyticsQuery(
   if (params.to) q.set("to", params.to);
   if (params.timezone) q.set("timezone", params.timezone);
   if (params.machine) q.set("machine", params.machine);
+  if (params.project) q.set("project", params.project);
   if (extra) {
     for (const [k, v] of Object.entries(extra)) {
       q.set(k, v);
@@ -383,12 +386,20 @@ export function getAnalyticsVelocity(
 }
 
 export function getAnalyticsTools(
-  params: AnalyticsParams & { project?: string },
+  params: AnalyticsParams,
 ): Promise<ToolsAnalyticsResponse> {
-  const { project, ...base } = params;
-  const extra: Record<string, string> = {};
-  if (project) extra["project"] = project;
   return fetchJSON(
-    `/analytics/tools${analyticsQuery(base, extra)}`,
+    `/analytics/tools${analyticsQuery(params)}`,
+  );
+}
+
+export function getAnalyticsTopSessions(
+  params: AnalyticsParams & { metric?: string },
+): Promise<TopSessionsResponse> {
+  const { metric, ...base } = params;
+  const extra: Record<string, string> = {};
+  if (metric) extra["metric"] = metric;
+  return fetchJSON(
+    `/analytics/top-sessions${analyticsQuery(base, extra)}`,
   );
 }

@@ -10,6 +10,7 @@
   import VelocityMetrics from "./VelocityMetrics.svelte";
   import ToolUsage from "./ToolUsage.svelte";
   import AgentComparison from "./AgentComparison.svelte";
+  import TopSessions from "./TopSessions.svelte";
   import { analytics } from "../../stores/analytics.svelte.js";
   import { exportAnalyticsCSV } from "../../utils/csv-export.js";
 
@@ -66,11 +67,11 @@
     <SummaryCards />
 
     <div class="chart-grid">
-      <div class="chart-panel wide">
+      <div class="chart-panel">
         <Heatmap />
       </div>
 
-      <div class="chart-panel wide">
+      <div class="chart-panel">
         <HourOfWeekHeatmap />
       </div>
 
@@ -79,6 +80,10 @@
       </div>
 
       <div class="chart-panel">
+        <TopSessions />
+      </div>
+
+      <div class="chart-panel wide">
         <ProjectBreakdown />
       </div>
 
@@ -86,12 +91,12 @@
         <SessionShape />
       </div>
 
-      <div class="chart-panel wide">
-        <VelocityMetrics />
+      <div class="chart-panel">
+        <ToolUsage />
       </div>
 
       <div class="chart-panel wide">
-        <ToolUsage />
+        <VelocityMetrics />
       </div>
 
       <div class="chart-panel wide">

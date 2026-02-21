@@ -7,6 +7,7 @@ import type {
   SessionShapeResponse,
   VelocityResponse,
   ToolsAnalyticsResponse,
+  TopSessionsResponse,
 } from "../api/types.js";
 import {
   getAnalyticsSummary,
@@ -17,6 +18,7 @@ import {
   getAnalyticsSessionShape,
   getAnalyticsVelocity,
   getAnalyticsTools,
+  getAnalyticsTopSessions,
   type AnalyticsParams,
 } from "../api/client.js";
 
@@ -46,7 +48,8 @@ type Panel =
   | "hourOfWeek"
   | "sessionShape"
   | "velocity"
-  | "tools";
+  | "tools"
+  | "topSessions";
 
 class AnalyticsStore {
   from: string = $state(daysAgo(30));
@@ -54,6 +57,7 @@ class AnalyticsStore {
   granularity: string = $state("day");
   metric: string = $state("messages");
   selectedDate: string | null = $state(null);
+  project: string = $state("");
 
   summary = $state<AnalyticsSummary | null>(null);
   activity = $state<ActivityResponse | null>(null);
@@ -63,6 +67,8 @@ class AnalyticsStore {
   sessionShape = $state<SessionShapeResponse | null>(null);
   velocity = $state<VelocityResponse | null>(null);
   tools = $state<ToolsAnalyticsResponse | null>(null);
+  topSessions = $state<TopSessionsResponse | null>(null);
+  topMetric: string = $state("messages");
 
   loading = $state({
     summary: false,
@@ -73,6 +79,7 @@ class AnalyticsStore {
     sessionShape: false,
     velocity: false,
     tools: false,
+    topSessions: false,
   });
 
   errors = $state<Record<Panel, string | null>>({
@@ -84,6 +91,7 @@ class AnalyticsStore {
     sessionShape: null,
     velocity: null,
     tools: null,
+    topSessions: null,
   });
 
   // Per-panel version counters to avoid cross-panel conflicts.
@@ -96,14 +104,17 @@ class AnalyticsStore {
     sessionShape: 0,
     velocity: 0,
     tools: 0,
+    topSessions: 0,
   };
 
   private baseParams(): AnalyticsParams {
-    return {
+    const p: AnalyticsParams = {
       from: this.from,
       to: this.to,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
+    if (this.project) p.project = this.project;
+    return p;
   }
 
   // Returns params narrowed to selectedDate when one is active.
@@ -130,6 +141,7 @@ class AnalyticsStore {
       this.fetchSessionShape(),
       this.fetchVelocity(),
       this.fetchTools(),
+      this.fetchTopSessions(),
     ]);
   }
 
@@ -317,6 +329,35 @@ class AnalyticsStore {
     }
   }
 
+  async fetchTopSessions() {
+    const v = ++this.versions.topSessions;
+    this.loading.topSessions = true;
+    this.errors.topSessions = null;
+    try {
+      const data = await getAnalyticsTopSessions({
+        ...this.filterParams(),
+        metric: this.topMetric,
+      });
+      if (this.versions.topSessions === v) {
+        this.topSessions = data;
+      }
+    } catch (e) {
+      if (this.versions.topSessions === v) {
+        this.errors.topSessions =
+          e instanceof Error ? e.message : "Failed to load";
+      }
+    } finally {
+      if (this.versions.topSessions === v) {
+        this.loading.topSessions = false;
+      }
+    }
+  }
+
+  setTopMetric(m: string) {
+    this.topMetric = m;
+    this.fetchTopSessions();
+  }
+
   setDateRange(from: string, to: string) {
     this.from = from;
     this.to = to;
@@ -336,6 +377,7 @@ class AnalyticsStore {
     this.fetchSessionShape();
     this.fetchVelocity();
     this.fetchTools();
+    this.fetchTopSessions();
   }
 
   setGranularity(g: string) {
@@ -346,6 +388,15 @@ class AnalyticsStore {
   setMetric(m: string) {
     this.metric = m;
     this.fetchHeatmap();
+  }
+
+  setProject(name: string) {
+    if (this.project === name) {
+      this.project = "";
+    } else {
+      this.project = name;
+    }
+    this.fetchAll();
   }
 }
 

@@ -1,6 +1,5 @@
 <script lang="ts">
   import { analytics } from "../../stores/analytics.svelte.js";
-  import { router } from "../../stores/router.svelte.js";
   import type { ProjectAnalytics } from "../../api/types.js";
 
   const MAX_PROJECTS = 15;
@@ -51,7 +50,7 @@
 
   function handleClick(project: ProjectAnalytics) {
     if (project.name.startsWith("Other (")) return;
-    router.navigate("sessions", { project: project.name });
+    analytics.setProject(project.name);
   }
 
   let tooltip = $state<{
@@ -91,7 +90,15 @@
 <div class="breakdown-container">
   <div class="breakdown-header">
     <h3 class="chart-title">Projects</h3>
-    {#if rows.length > 0}
+    {#if analytics.project}
+      <button
+        class="filter-badge"
+        onclick={() => analytics.setProject(analytics.project)}
+      >
+        {analytics.project}
+        <span class="clear-x">&times;</span>
+      </button>
+    {:else if rows.length > 0}
       <span class="count">{analytics.projects?.projects.length ?? 0} total</span>
     {/if}
   </div>
@@ -116,6 +123,7 @@
         <div
           class="bar-row"
           class:clickable={!project.name.startsWith("Other (")}
+          class:selected={analytics.project === project.name}
           onclick={() => handleClick(project)}
           onmouseenter={(e) => handleHover(e, project)}
           onmouseleave={handleLeave}
@@ -194,6 +202,37 @@
 
   .bar-row.clickable:hover {
     background: var(--bg-surface-hover);
+  }
+
+  .bar-row.selected {
+    background: color-mix(
+      in srgb, var(--accent-blue) 12%, transparent
+    );
+  }
+
+  .filter-badge {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 6px;
+    font-size: 10px;
+    color: var(--accent-blue);
+    background: color-mix(
+      in srgb, var(--accent-blue) 12%, transparent
+    );
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+
+  .filter-badge:hover {
+    background: color-mix(
+      in srgb, var(--accent-blue) 20%, transparent
+    );
+  }
+
+  .clear-x {
+    font-size: 12px;
+    line-height: 1;
   }
 
   .project-name {
