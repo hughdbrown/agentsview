@@ -8,6 +8,4 @@ if (!target) {
   throw new Error("Root element 'app' not found. Cannot mount application.");
 }
 
-const app = mount(App, { target });
-
-export default app;
+mount(App, { target });
