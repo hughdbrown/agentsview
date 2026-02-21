@@ -1,4 +1,5 @@
 import type { Message } from "../api/types.js";
+import { LRUCache } from "./cache.js";
 
 export type SegmentType = "text" | "thinking" | "tool" | "code";
 
@@ -34,51 +35,19 @@ interface Match {
   segment: ContentSegment;
 }
 
-const MAX_TOOL_ONLY_CACHE = 12000;
-const MAX_SEGMENT_CACHE = 8000;
-const toolOnlyCache = new Map<string, boolean>();
-const segmentCache = new Map<string, ContentSegment[]>();
-
-function cacheGet<K, V>(
-  cache: Map<K, V>,
-  key: K,
-): V | undefined {
-  const value = cache.get(key);
-  if (value === undefined) return undefined;
-  // Move to end of insertion order for LRU eviction
-  cache.delete(key);
-  cache.set(key, value);
-  return value;
-}
-
-function cachePut<K, V>(
-  cache: Map<K, V>,
-  key: K,
-  value: V,
-  max: number,
-) {
-  if (cache.has(key)) return;
-  if (cache.size >= max) {
-    const first = cache.keys().next();
-    if (!first.done) {
-      cache.delete(first.value);
-    }
-  }
-  cache.set(key, value);
-}
+const toolOnlyCache = new LRUCache<string, boolean>(12000);
+const segmentCache = new LRUCache<string, ContentSegment[]>(8000);
 
 /** Returns true if the message contains only tool calls (no text) */
 export function isToolOnly(msg: Message): boolean {
   const key =
     `${msg.role}|${msg.has_tool_use ? 1 : 0}|${msg.content}`;
-  const cached = cacheGet(toolOnlyCache, key);
-  if (cached !== undefined) {
-    return cached;
-  }
+  const cached = toolOnlyCache.get(key);
+  if (cached !== undefined) return cached;
 
   if (msg.role !== "assistant") return false;
   if (!msg.has_tool_use) {
-    cachePut(toolOnlyCache, key, false, MAX_TOOL_ONLY_CACHE);
+    toolOnlyCache.set(key, false);
     return false;
   }
   const stripped = msg.content
@@ -86,7 +55,7 @@ export function isToolOnly(msg: Message): boolean {
     .replace(TOOL_RE, "")
     .trim();
   const result = stripped.length === 0;
-  cachePut(toolOnlyCache, key, result, MAX_TOOL_ONLY_CACHE);
+  toolOnlyCache.set(key, result);
   return result;
 }
 
@@ -185,7 +154,7 @@ function buildSegments(
 /** Parse message content into typed segments */
 export function parseContent(text: string): ContentSegment[] {
   if (!text) return [];
-  const cached = cacheGet(segmentCache, text);
+  const cached = segmentCache.get(text);
   if (cached) return cached;
 
   const matches = extractMatches(text);
@@ -194,13 +163,13 @@ export function parseContent(text: string): ContentSegment[] {
     const onlyText: ContentSegment[] = [
       { type: "text", content: text.trimEnd() },
     ];
-    cachePut(segmentCache, text, onlyText, MAX_SEGMENT_CACHE);
+    segmentCache.set(text, onlyText);
     return onlyText;
   }
 
   const deduped = resolveOverlaps(matches);
   const segments = buildSegments(text, deduped);
 
-  cachePut(segmentCache, text, segments, MAX_SEGMENT_CACHE);
+  segmentCache.set(text, segments);
   return segments;
 }
