@@ -221,4 +221,8 @@ class SessionsStore {
   }
 }
 
-export const sessions = new SessionsStore();
+export function createSessionsStore(): SessionsStore {
+  return new SessionsStore();
+}
+
+export const sessions = createSessionsStore();
