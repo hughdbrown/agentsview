@@ -62,9 +62,16 @@ export function formatNumber(n: number): string {
  * Only allows <mark> tags for highlighting; strips everything else.
  */
 export function sanitizeSnippet(html: string): string {
+  const OPEN = "\x00MARK_O\x00";
+  const CLOSE = "\x00MARK_C\x00";
+  const OPEN_RE = /\x00MARK_O\x00/g;
+  const CLOSE_RE = /\x00MARK_C\x00/g;
+
   return html
+    .replace(/<mark>/gi, OPEN)
+    .replace(/<\/mark>/gi, CLOSE)
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/&lt;mark&gt;/gi, "<mark>")
-    .replace(/&lt;\/mark&gt;/gi, "</mark>");
+    .replace(OPEN_RE, "<mark>")
+    .replace(CLOSE_RE, "</mark>");
 }

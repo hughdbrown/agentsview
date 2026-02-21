@@ -58,6 +58,16 @@ describe("sanitizeSnippet", () => {
       "<mark onload=alert(1)>text</mark>",
       "&lt;mark onload=alert(1)&gt;text</mark>",
     ],
+    [
+      "keeps pre-escaped mark entities as text",
+      "&lt;mark&gt;not real&lt;/mark&gt;",
+      "&lt;mark&gt;not real&lt;/mark&gt;",
+    ],
+    [
+      "keeps pre-escaped entities alongside real mark tags",
+      "<mark>real</mark> &lt;mark&gt;fake&lt;/mark&gt;",
+      "<mark>real</mark> &lt;mark&gt;fake&lt;/mark&gt;",
+    ],
   ])("%s", (_name, input, expected) => {
     expect(sanitizeSnippet(input)).toBe(expected);
   });
