@@ -14,10 +14,8 @@ const DEEP_SESSIONS = 2000;
 const MIDDLE_INDEX = Math.floor(DEEP_SESSIONS / 2);
 const LAST_INDEX = DEEP_SESSIONS - 1;
 
-/** Regex matching the formatted session count in the list header. */
-const DEEP_COUNT_RE = new RegExp(
-  `${DEEP_SESSIONS.toLocaleString()} sessions`,
-);
+/** Expected header text after all deep sessions load (en-US). */
+const DEEP_COUNT_TEXT = `${DEEP_SESSIONS.toLocaleString("en-US")} sessions`;
 
 const sessions = createMockSessions(
   TOTAL_SESSIONS,
@@ -98,7 +96,7 @@ test.describe("Virtual list behavior", () => {
     // sessions.length, so scrolling before loading completes
     // would land at the wrong position.
     await expect(sp.sessionListHeader).toContainText(
-      DEEP_COUNT_RE,
+      DEEP_COUNT_TEXT,
       { timeout: 15_000 },
     );
 
@@ -118,7 +116,7 @@ test.describe("Virtual list behavior", () => {
     await sp.filterByProject("deep");
 
     await expect(sp.sessionListHeader).toContainText(
-      DEEP_COUNT_RE,
+      DEEP_COUNT_TEXT,
       { timeout: 15_000 },
     );
 
