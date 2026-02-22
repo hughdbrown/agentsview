@@ -8,6 +8,7 @@
 node_modules/
 frontend/dist/
 frontend/test-results/
+test-results/
 frontend/playwright-report/
 
 # Embedded frontend build output
