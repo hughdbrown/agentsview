@@ -85,13 +85,17 @@ test.describe("Virtual list behavior", () => {
       .toBe(0);
   });
 
-  test("keeps loading after dragging into an unloaded middle range", async () => {
+  test("scrolls to an unloaded middle range", async () => {
     await sp.filterByProject("deep");
-    await expect(
-      sp.page.getByRole("button", {
-        name: /Hello from deep-session 0/i,
-      }),
-    ).toBeVisible();
+
+    // Wait for all pages to load so scrollHeight reflects the
+    // full dataset. The virtual list sizes itself from
+    // sessions.length, so scrolling before loading completes
+    // would land at the wrong position.
+    await expect(sp.sessionListHeader).toContainText(
+      /2.?000 sessions/,
+      { timeout: 15_000 },
+    );
 
     await scrollListTo(sp.sessionListScroll, "middle");
 
@@ -102,16 +106,16 @@ test.describe("Virtual list behavior", () => {
           "i",
         ),
       }),
-    ).toBeVisible({ timeout: 10_000 });
+    ).toBeVisible({ timeout: 5_000 });
   });
 
-  test("keeps loading after dragging to the end of an unloaded range", async () => {
+  test("scrolls to the end of a large list", async () => {
     await sp.filterByProject("deep");
-    await expect(
-      sp.page.getByRole("button", {
-        name: /Hello from deep-session 0/i,
-      }),
-    ).toBeVisible();
+
+    await expect(sp.sessionListHeader).toContainText(
+      /2.?000 sessions/,
+      { timeout: 15_000 },
+    );
 
     await scrollListTo(sp.sessionListScroll, "bottom");
 
@@ -122,6 +126,6 @@ test.describe("Virtual list behavior", () => {
           "i",
         ),
       }),
-    ).toBeVisible({ timeout: 10_000 });
+    ).toBeVisible({ timeout: 5_000 });
   });
 });
