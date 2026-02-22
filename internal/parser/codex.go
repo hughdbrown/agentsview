@@ -318,8 +318,7 @@ func extractPatchedFiles(patch string) []string {
 
 	var files []string
 	seen := make(map[string]struct{})
-	lines := strings.Split(patch, "\n")
-	for _, line := range lines {
+	for line := range strings.SplitSeq(patch, "\n") {
 		for _, prefix := range []string{
 			"*** Add File: ",
 			"*** Update File: ",

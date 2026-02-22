@@ -1384,7 +1384,6 @@ func TestMigrationRace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	defer rawDB.Close()
 
 	// Create sessions table without file_hash
 	_, err = rawDB.Exec(`
@@ -1406,6 +1405,10 @@ func TestMigrationRace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup schema: %v", err)
 	}
+
+	// Close the raw connection before concurrent opens to avoid
+	// holding a lock on Windows.
+	rawDB.Close()
 
 	// 2. Run concurrent Open
 	// Both should succeed. One will likely hit "duplicate column".

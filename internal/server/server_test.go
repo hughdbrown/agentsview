@@ -217,15 +217,6 @@ func (te *testEnv) seedSession(
 	})
 }
 
-func (te *testEnv) seedSessionWithMessages(
-	t *testing.T, id, project string, msgCount int,
-	opts ...func(*db.Session),
-) {
-	t.Helper()
-	te.seedSession(t, id, project, msgCount, opts...)
-	te.seedMessages(t, id, msgCount)
-}
-
 func (te *testEnv) seedMessages(
 	t *testing.T, sessionID string, count int, mods ...func(i int, m *db.Message),
 ) {

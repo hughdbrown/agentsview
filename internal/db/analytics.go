@@ -32,10 +32,7 @@ func queryChunked(
 	fn func(chunk []string) error,
 ) error {
 	for i := 0; i < len(ids); i += maxSQLVars {
-		end := i + maxSQLVars
-		if end > len(ids) {
-			end = len(ids)
-		}
+		end := min(i+maxSQLVars, len(ids))
 		if err := fn(ids[i:end]); err != nil {
 			return err
 		}
@@ -398,10 +395,7 @@ func (db *DB) GetAnalyticsSummary(
 			counts = append(counts, c)
 		}
 		sort.Sort(sort.Reverse(sort.IntSlice(counts)))
-		top := 3
-		if len(counts) < top {
-			top = len(counts)
-		}
+		top := min(3, len(counts))
 		topSum := 0
 		for _, c := range counts[:top] {
 			topSum += c
@@ -1150,15 +1144,9 @@ func (db *DB) GetAnalyticsSessionShape(
 	}
 	defer rows.Close()
 
-	type sessInfo struct {
-		id string
-		mc int
-	}
-
 	lengthCounts := make(map[string]int)
 	durationCounts := make(map[string]int)
 	var sessionIDs []string
-	var filteredSessions []sessInfo
 	totalCount := 0
 
 	for rows.Next() {
@@ -1183,8 +1171,6 @@ func (db *DB) GetAnalyticsSessionShape(
 		totalCount++
 		lengthCounts[lengthBucket(mc)]++
 		sessionIDs = append(sessionIDs, id)
-		filteredSessions = append(filteredSessions,
-			sessInfo{id: id, mc: mc})
 
 		if startedAt != nil && endedAt != nil &&
 			*startedAt != "" && *endedAt != "" {

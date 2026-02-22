@@ -139,20 +139,19 @@ func TestWatcherCallsOnChange(t *testing.T) {
 }
 
 func TestWatcherAutoWatchesNewDirs(t *testing.T) {
-	var called atomic.Bool
+	var mu sync.Mutex
+	var allPaths []string
 	done := make(chan struct{}, 1)
 
-	callCount := atomic.Int32{}
-	onChange := func(_ []string) {
-		if callCount.Add(1) >= 2 {
-			if !called.Load() {
-				called.Store(true)
-				done <- struct{}{}
-			}
+	w, dir := startTestWatcher(t, func(paths []string) {
+		mu.Lock()
+		allPaths = append(allPaths, paths...)
+		mu.Unlock()
+		select {
+		case done <- struct{}{}:
+		default:
 		}
-	}
-
-	w, dir := startTestWatcher(t, onChange)
+	})
 
 	subdir := filepath.Join(dir, "newdir")
 	if err := os.Mkdir(subdir, 0o755); err != nil {
@@ -166,14 +165,21 @@ func TestWatcherAutoWatchesNewDirs(t *testing.T) {
 		},
 	)
 
-	path := filepath.Join(subdir, "nested.jsonl")
+	nestedPath := filepath.Join(subdir, "nested.jsonl")
 	if err := os.WriteFile(
-		path, []byte("nested"), 0o644,
+		nestedPath, []byte("nested"), 0o644,
 	); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	waitWithTimeout(t, done, 5*time.Second, "timed out waiting for nested file change")
+	pollUntil(t, 5*time.Second, 50*time.Millisecond,
+		"timed out waiting for nested file change",
+		func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return slices.Contains(allPaths, nestedPath)
+		},
+	)
 }
 
 func TestWatcherStopIsClean(t *testing.T) {
