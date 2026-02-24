@@ -268,6 +268,16 @@ func (te *testEnv) post(
 	return w
 }
 
+func (te *testEnv) del(
+	t *testing.T, path string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("DELETE", path, nil)
+	w := httptest.NewRecorder()
+	te.handler.ServeHTTP(w, req)
+	return w
+}
+
 // uploadFile creates a multipart upload request.
 func (te *testEnv) upload(
 	t *testing.T, filename, content, query string,
@@ -960,6 +970,25 @@ func TestCORSPreflight(t *testing.T) {
 	w := httptest.NewRecorder()
 	te.handler.ServeHTTP(w, req)
 	assertStatus(t, w, http.StatusNoContent)
+}
+
+func TestCORSAllowMethods(t *testing.T) {
+	te := setup(t)
+
+	w := te.get(t, "/api/v1/stats")
+	methods := w.Header().Get(
+		"Access-Control-Allow-Methods",
+	)
+	for _, want := range []string{
+		"GET", "POST", "DELETE", "OPTIONS",
+	} {
+		if !strings.Contains(methods, want) {
+			t.Errorf(
+				"Allow-Methods %q missing %s",
+				methods, want,
+			)
+		}
+	}
 }
 
 func TestGetGithubConfig(t *testing.T) {

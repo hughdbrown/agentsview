@@ -1,7 +1,8 @@
-type Route = "sessions";
+type Route = "sessions" | "insights";
 
 const VALID_ROUTES: ReadonlySet<string> = new Set<Route>([
   "sessions",
+  "insights",
 ]);
 
 const DEFAULT_ROUTE: Route = "sessions";

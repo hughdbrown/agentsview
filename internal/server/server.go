@@ -106,6 +106,11 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/analytics/tools", s.withTimeout(s.handleAnalyticsTools))
 	s.mux.Handle("GET /api/v1/analytics/top-sessions", s.withTimeout(s.handleAnalyticsTopSessions))
 
+	s.mux.Handle("GET /api/v1/insights", s.withTimeout(s.handleListInsights))
+	s.mux.Handle("GET /api/v1/insights/{id}", s.withTimeout(s.handleGetInsight))
+	s.mux.Handle("DELETE /api/v1/insights/{id}", s.withTimeout(s.handleDeleteInsight))
+	s.mux.HandleFunc("POST /api/v1/insights/generate", s.handleGenerateInsight)
+
 	s.mux.Handle("GET /api/v1/search", s.withTimeout(s.handleSearch))
 	s.mux.Handle("GET /api/v1/projects", s.withTimeout(s.handleListProjects))
 	s.mux.Handle("GET /api/v1/machines", s.withTimeout(s.handleListMachines))
@@ -223,7 +228,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 			)
 			w.Header().Set(
 				"Access-Control-Allow-Methods",
-				"GET, POST, OPTIONS",
+				"GET, POST, DELETE, OPTIONS",
 			)
 			w.Header().Set(
 				"Access-Control-Allow-Headers",

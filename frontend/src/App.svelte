@@ -9,6 +9,7 @@
   import ShortcutsModal from "./lib/components/modals/ShortcutsModal.svelte";
   import PublishModal from "./lib/components/modals/PublishModal.svelte";
   import AnalyticsPage from "./lib/components/analytics/AnalyticsPage.svelte";
+  import InsightsPage from "./lib/components/insights/InsightsPage.svelte";
   import { sessions } from "./lib/stores/sessions.svelte.js";
   import { messages } from "./lib/stores/messages.svelte.js";
   import { sync } from "./lib/stores/sync.svelte.js";
@@ -150,19 +151,55 @@
 
 <AppHeader />
 
-<ThreeColumnLayout>
-  {#snippet sidebar()}
-    <SessionList />
-  {/snippet}
+{#if router.route === "insights"}
+  <InsightsPage />
+{:else}
+  <ThreeColumnLayout>
+    {#snippet sidebar()}
+      <SessionList />
+    {/snippet}
 
-  {#snippet content()}
-    {#if sessions.activeSessionId}
-      <MessageList bind:this={messageListRef} />
-    {:else}
-      <AnalyticsPage />
-    {/if}
-  {/snippet}
-</ThreeColumnLayout>
+    {#snippet content()}
+      {#if sessions.activeSessionId}
+        {@const session = sessions.activeSession}
+        <div class="session-breadcrumb">
+          <button
+            class="breadcrumb-link"
+            onclick={() => sessions.deselectSession()}
+          >Sessions</button>
+          <span class="breadcrumb-sep">/</span>
+          <span class="breadcrumb-current">
+            {session?.project ?? ""}
+          </span>
+          {#if session}
+            <span class="breadcrumb-meta">
+              <span
+                class="agent-badge"
+                class:agent-claude={session.agent === "claude"}
+                class:agent-codex={session.agent === "codex"}
+              >{session.agent}</span>
+              {#if session.started_at}
+                <span class="session-time">
+                  {new Date(session.started_at).toLocaleDateString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                  })}
+                  {new Date(session.started_at).toLocaleTimeString(undefined, {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+              {/if}
+            </span>
+          {/if}
+        </div>
+        <MessageList bind:this={messageListRef} />
+      {:else}
+        <AnalyticsPage />
+      {/if}
+    {/snippet}
+  </ThreeColumnLayout>
+{/if}
 
 <StatusBar />
 
@@ -177,3 +214,80 @@
 {#if ui.activeModal === "publish"}
   <PublishModal />
 {/if}
+
+<style>
+  .session-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--border-muted);
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .breadcrumb-link {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 0.12s;
+  }
+
+  .breadcrumb-link:hover {
+    color: var(--accent-blue);
+  }
+
+  .breadcrumb-sep {
+    opacity: 0.3;
+    font-size: 10px;
+  }
+
+  .breadcrumb-current {
+    color: var(--text-primary);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .breadcrumb-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .agent-badge {
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: white;
+    flex-shrink: 0;
+    background: var(--text-muted);
+  }
+
+  .agent-claude {
+    background: var(--accent-blue);
+  }
+
+  .agent-codex {
+    background: var(--accent-green);
+  }
+
+  .session-time {
+    font-size: 10px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+</style>

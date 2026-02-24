@@ -2,6 +2,7 @@
   import { ui } from "../../stores/ui.svelte.js";
   import { sessions } from "../../stores/sessions.svelte.js";
   import { sync } from "../../stores/sync.svelte.js";
+  import { router } from "../../stores/router.svelte.js";
   import { getExportUrl } from "../../api/client.js";
 
   const isMac = navigator.platform.toUpperCase().includes("MAC");
@@ -30,8 +31,11 @@
   <div class="header-left">
     <button
       class="header-home"
-      onclick={() => sessions.deselectSession()}
-      title="Back to dashboard"
+      onclick={() => {
+        sessions.deselectSession();
+        router.navigate("sessions");
+      }}
+      title="Home"
     >
       <svg class="header-logo" width="18" height="18" viewBox="0 0 32 32" aria-hidden="true">
         <rect width="32" height="32" rx="6" fill="var(--accent-blue, #3b82f6)"/>
@@ -56,18 +60,33 @@
       {/each}
     </select>
 
-    {#if hasActiveSession}
-      <button
-        class="dashboard-btn"
-        onclick={() => sessions.deselectSession()}
-        title="Back to dashboard (Esc)"
-      >
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-          <path d="M0 1.5A1.5 1.5 0 011.5 0h2A1.5 1.5 0 015 1.5v2A1.5 1.5 0 013.5 5h-2A1.5 1.5 0 010 3.5v-2zm6 0A1.5 1.5 0 017.5 0h2A1.5 1.5 0 0111 1.5v2A1.5 1.5 0 019.5 5h-2A1.5 1.5 0 016 3.5v-2zm5 0A1.5 1.5 0 0112.5 0h2A1.5 1.5 0 0116 1.5v2A1.5 1.5 0 0114.5 5h-2A1.5 1.5 0 0111 3.5v-2zM0 7.5A1.5 1.5 0 011.5 6h2A1.5 1.5 0 015 7.5v2A1.5 1.5 0 013.5 11h-2A1.5 1.5 0 010 9.5v-2zm6 0A1.5 1.5 0 017.5 6h2A1.5 1.5 0 0111 7.5v2A1.5 1.5 0 019.5 11h-2A1.5 1.5 0 016 9.5v-2zm5 0A1.5 1.5 0 0112.5 6h2A1.5 1.5 0 0116 7.5v2a1.5 1.5 0 01-1.5 1.5h-2A1.5 1.5 0 0111 9.5v-2zM0 13.5A1.5 1.5 0 011.5 12h2A1.5 1.5 0 015 13.5v2A1.5 1.5 0 013.5 17h-2A1.5 1.5 0 010 15.5v-2zm6 0A1.5 1.5 0 017.5 12h2a1.5 1.5 0 011.5 1.5v2A1.5 1.5 0 019.5 17h-2A1.5 1.5 0 016 15.5v-2zm5 0a1.5 1.5 0 011.5-1.5h2a1.5 1.5 0 011.5 1.5v2a1.5 1.5 0 01-1.5 1.5h-2a1.5 1.5 0 01-1.5-1.5v-2z"/>
-        </svg>
-        Dashboard
-      </button>
-    {/if}
+    <button
+      class="nav-btn"
+      class:active={router.route === "sessions"}
+      onclick={() => {
+        sessions.deselectSession();
+        router.navigate("sessions");
+      }}
+      title="Sessions"
+    >
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M0 1.5A1.5 1.5 0 011.5 0h2A1.5 1.5 0 015 1.5v2A1.5 1.5 0 013.5 5h-2A1.5 1.5 0 010 3.5v-2zm6 0A1.5 1.5 0 017.5 0h2A1.5 1.5 0 0111 1.5v2A1.5 1.5 0 019.5 5h-2A1.5 1.5 0 016 3.5v-2zm5 0A1.5 1.5 0 0112.5 0h2A1.5 1.5 0 0116 1.5v2A1.5 1.5 0 0114.5 5h-2A1.5 1.5 0 0111 3.5v-2zM0 7.5A1.5 1.5 0 011.5 6h2A1.5 1.5 0 015 7.5v2A1.5 1.5 0 013.5 11h-2A1.5 1.5 0 010 9.5v-2zm6 0A1.5 1.5 0 017.5 6h2A1.5 1.5 0 0111 7.5v2A1.5 1.5 0 019.5 11h-2A1.5 1.5 0 016 9.5v-2zm5 0A1.5 1.5 0 0112.5 6h2A1.5 1.5 0 0116 7.5v2a1.5 1.5 0 01-1.5 1.5h-2A1.5 1.5 0 0111 9.5v-2zM0 13.5A1.5 1.5 0 011.5 12h2A1.5 1.5 0 015 13.5v2A1.5 1.5 0 013.5 17h-2A1.5 1.5 0 010 15.5v-2zm6 0A1.5 1.5 0 017.5 12h2a1.5 1.5 0 011.5 1.5v2A1.5 1.5 0 019.5 17h-2A1.5 1.5 0 016 15.5v-2zm5 0a1.5 1.5 0 011.5-1.5h2a1.5 1.5 0 011.5 1.5v2a1.5 1.5 0 01-1.5 1.5h-2a1.5 1.5 0 01-1.5-1.5v-2z"/>
+      </svg>
+      Sessions
+    </button>
+
+    <button
+      class="nav-btn"
+      class:active={router.route === "insights"}
+      onclick={() => router.navigate("insights")}
+      title="Insights"
+    >
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M14.5 3a.5.5 0 01.5.5v9a.5.5 0 01-.5.5h-13a.5.5 0 01-.5-.5v-9a.5.5 0 01.5-.5h13zm-13-1A1.5 1.5 0 000 3.5v9A1.5 1.5 0 001.5 14h13a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0014.5 2h-13z"/>
+        <path d="M3 5.5a.5.5 0 01.5-.5h9a.5.5 0 010 1h-9a.5.5 0 01-.5-.5zM3 8a.5.5 0 01.5-.5h9a.5.5 0 010 1h-9A.5.5 0 013 8zm0 2.5a.5.5 0 01.5-.5h6a.5.5 0 010 1h-6a.5.5 0 01-.5-.5z"/>
+      </svg>
+      Insights
+    </button>
   </div>
 
   <button
@@ -181,15 +200,15 @@
 
 <style>
   .header {
-    height: 36px;
+    height: 40px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 12px;
+    padding: 0 14px;
     background: var(--bg-surface);
     border-bottom: 1px solid var(--border-default);
     flex-shrink: 0;
-    gap: 8px;
+    gap: 10px;
   }
 
   .header-left {
@@ -219,21 +238,23 @@
 
   .header-title {
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 650;
     color: var(--text-primary);
     white-space: nowrap;
+    letter-spacing: -0.01em;
   }
 
   .project-select {
-    height: 24px;
-    padding: 0 6px;
+    height: 26px;
+    padding: 0 8px;
     background: var(--bg-inset);
-    border: 1px solid var(--border-default);
+    border: 1px solid var(--border-muted);
     border-radius: var(--radius-sm);
     font-size: 11px;
     color: var(--text-secondary);
     cursor: pointer;
     max-width: 200px;
+    transition: border-color 0.15s;
   }
 
   .project-select:focus {
@@ -241,43 +262,54 @@
     border-color: var(--accent-blue);
   }
 
-  .dashboard-btn {
-    height: 24px;
+  .nav-btn {
+    height: 26px;
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 0 8px;
+    gap: 5px;
+    padding: 0 10px;
     border-radius: var(--radius-sm);
     font-size: 11px;
     font-weight: 500;
     color: var(--text-muted);
     cursor: pointer;
     white-space: nowrap;
+    transition: background 0.12s, color 0.12s;
   }
 
-  .dashboard-btn:hover {
+  .nav-btn:hover {
     background: var(--bg-surface-hover);
     color: var(--text-primary);
   }
 
+  .nav-btn.active {
+    color: var(--accent-blue);
+    background: color-mix(
+      in srgb,
+      var(--accent-blue) 8%,
+      transparent
+    );
+  }
+
   .search-hint {
-    height: 24px;
+    height: 26px;
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 0 8px;
+    padding: 0 10px;
     background: var(--bg-inset);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-md);
     color: var(--text-muted);
     font-size: 11px;
     cursor: pointer;
     white-space: nowrap;
-    transition: border-color 0.1s;
+    transition: border-color 0.15s, box-shadow 0.15s;
   }
 
   .search-hint:hover {
-    border-color: var(--text-muted);
+    border-color: var(--border-default);
+    box-shadow: var(--shadow-sm);
   }
 
   .search-hint-text {
@@ -311,12 +343,12 @@
     color: var(--text-muted);
     font-size: 12px;
     font-weight: 600;
-    transition: background 0.1s, color 0.1s;
+    transition: background 0.12s, color 0.12s;
   }
 
   .header-btn:hover:not(:disabled) {
     background: var(--bg-surface-hover);
-    color: var(--text-primary);
+    color: var(--text-secondary);
   }
 
   .header-btn.active {

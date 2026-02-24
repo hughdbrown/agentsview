@@ -95,3 +95,24 @@ CREATE INDEX IF NOT EXISTS idx_tool_calls_session
     ON tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_category
     ON tool_calls(category);
+
+-- Insights table for AI-generated activity insights
+CREATE TABLE IF NOT EXISTS insights (
+    id          INTEGER PRIMARY KEY,
+    type        TEXT NOT NULL,
+    date_from   TEXT NOT NULL,
+    date_to     TEXT NOT NULL,
+    project     TEXT,
+    agent       TEXT NOT NULL,
+    model       TEXT,
+    prompt      TEXT,
+    content     TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_insights_lookup
+    ON insights(type, date_from, project);
+
+CREATE INDEX IF NOT EXISTS idx_insights_created
+    ON insights(created_at DESC);

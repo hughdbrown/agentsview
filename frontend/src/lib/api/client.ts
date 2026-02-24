@@ -26,9 +26,29 @@ import type {
   Granularity,
   HeatmapMetric,
   TopSessionsMetric,
+  Insight,
+  InsightsResponse,
+  GenerateInsightRequest,
 } from "./types.js";
 
 const BASE = "/api/v1";
+
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+function apiErrorMessage(
+  status: number,
+  body: string,
+): string {
+  return body.trim() || `API ${status}`;
+}
 
 async function fetchJSON<T>(
   path: string,
@@ -37,7 +57,10 @@ async function fetchJSON<T>(
   const res = await fetch(`${BASE}${path}`, init);
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`API ${res.status}: ${body}`);
+    throw new ApiError(
+      res.status,
+      apiErrorMessage(res.status, body),
+    );
   }
   return res.json() as Promise<T>;
 }
@@ -207,6 +230,9 @@ export function triggerSync(
       const last = buf.lastIndexOf("\n\n");
       if (last !== -1) buf = buf.slice(last + 2);
     }
+
+    // Flush any remaining multibyte bytes from decoder
+    buf += decoder.decode();
 
     if (!stats && buf.trim()) {
       stats = processFrame(buf, onProgress);
@@ -408,4 +434,148 @@ export function getAnalyticsTopSessions(
   return fetchJSON(
     `/analytics/top-sessions${buildQuery({ ...params })}`,
   );
+}
+
+/* Insights */
+
+export interface ListInsightsParams {
+  type?: string;
+  project?: string;
+}
+
+export function listInsights(
+  params: ListInsightsParams = {},
+): Promise<InsightsResponse> {
+  return fetchJSON(
+    `/insights${buildQuery({ ...params })}`,
+  );
+}
+
+export function getInsight(id: number): Promise<Insight> {
+  return fetchJSON(`/insights/${id}`);
+}
+
+export async function deleteInsight(id: number): Promise<void> {
+  const res = await fetch(`${BASE}/insights/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new ApiError(
+      res.status,
+      apiErrorMessage(res.status, body),
+    );
+  }
+}
+
+export interface GenerateInsightHandle {
+  abort: () => void;
+  done: Promise<Insight>;
+}
+
+export function generateInsight(
+  req: GenerateInsightRequest,
+  onStatus?: (phase: string) => void,
+): GenerateInsightHandle {
+  const controller = new AbortController();
+
+  const done = (async () => {
+    const res = await fetch(`${BASE}/insights/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+      signal: controller.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      throw new Error(
+        `Generate request failed: ${res.status}`,
+      );
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let result: Insight | undefined;
+
+    for (;;) {
+      const { done: eof, value } = await reader.read();
+      if (eof) break;
+      buf += decoder.decode(value, { stream: true });
+      buf = buf.replaceAll("\r\n", "\n");
+
+      const parsed = processInsightFrames(
+        buf, onStatus,
+      );
+      if (parsed) {
+        result = parsed;
+        reader.cancel();
+        break;
+      }
+      const last = buf.lastIndexOf("\n\n");
+      if (last !== -1) buf = buf.slice(last + 2);
+    }
+
+    // Flush any remaining multibyte bytes from decoder
+    buf += decoder.decode();
+
+    if (!result && buf.trim()) {
+      result = processInsightFrame(buf, onStatus);
+    }
+
+    if (!result) {
+      throw new Error(
+        "Generate stream ended without done event",
+      );
+    }
+
+    return result;
+  })();
+
+  return { abort: () => controller.abort(), done };
+}
+
+function processInsightFrames(
+  buf: string,
+  onStatus?: (phase: string) => void,
+): Insight | undefined {
+  let idx: number;
+  let start = 0;
+  while ((idx = buf.indexOf("\n\n", start)) !== -1) {
+    const frame = buf.slice(start, idx);
+    start = idx + 2;
+    const result = processInsightFrame(frame, onStatus);
+    if (result) return result;
+  }
+  return undefined;
+}
+
+function processInsightFrame(
+  frame: string,
+  onStatus?: (phase: string) => void,
+): Insight | undefined {
+  let event = "";
+  const dataLines: string[] = [];
+  for (const line of frame.split("\n")) {
+    if (line.startsWith("event: ")) {
+      event = line.slice(7);
+    } else if (line.startsWith("data: ")) {
+      dataLines.push(line.slice(6));
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5));
+    }
+  }
+  const data = dataLines.join("\n");
+  if (!data) return undefined;
+
+  if (event === "status") {
+    const parsed = JSON.parse(data) as { phase: string };
+    onStatus?.(parsed.phase);
+  } else if (event === "done") {
+    return JSON.parse(data) as Insight;
+  } else if (event === "error") {
+    const parsed = JSON.parse(data) as { message: string };
+    throw new Error(parsed.message);
+  }
+  return undefined;
 }

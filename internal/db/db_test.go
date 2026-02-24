@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -232,6 +234,80 @@ func TestOpenCreatesFile(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("db file not created: %v", err)
 	}
+}
+
+func TestOpenProbeErrorPropagates(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping: chmod semantics differ on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("skipping: running as root")
+	}
+
+	t.Run("StatPermissionError", func(t *testing.T) {
+		dir := t.TempDir()
+		sub := filepath.Join(dir, "sub")
+		if err := os.Mkdir(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(sub, "test.db")
+
+		d, err := Open(path)
+		if err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		d.Close()
+
+		// Remove execute on parent dir so os.Stat fails
+		// with EACCES, not ENOENT.
+		if err := os.Chmod(sub, 0o000); err != nil {
+			t.Skipf("cannot remove permissions: %v", err)
+		}
+		t.Cleanup(func() { os.Chmod(sub, 0o755) })
+
+		_, err = Open(path)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !errors.Is(err, fs.ErrPermission) {
+			t.Errorf("expected permission error, got: %v",
+				err)
+		}
+		if !strings.Contains(err.Error(),
+			"checking schema") {
+			t.Errorf("expected 'checking schema' wrapper: %v",
+				err)
+		}
+	})
+
+	t.Run("ProbeReadError", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "test.db")
+
+		d, err := Open(path)
+		if err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		d.Close()
+
+		// Remove read on the file so os.Stat succeeds
+		// but the SQLite probe fails.
+		if err := os.Chmod(path, 0o000); err != nil {
+			t.Skipf("cannot remove permissions: %v", err)
+		}
+		t.Cleanup(func() { os.Chmod(path, 0o644) })
+
+		_, err = Open(path)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(),
+			"checking schema") &&
+			!strings.Contains(err.Error(),
+				"probing schema") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
 }
 
 func TestSessionCRUD(t *testing.T) {
@@ -843,6 +919,47 @@ func collectIDs(sessions []Session) []string {
 		ids[i] = s.ID
 	}
 	return ids
+}
+
+func TestFindPruneCandidatesExcludesParents(t *testing.T) {
+	d := testDB(t)
+
+	// Create a parent -> child chain.
+	insertSession(t, d, "parent1", "proj", func(s *Session) {
+		s.StartedAt = Ptr("2024-06-01T10:00:00Z")
+		s.EndedAt = Ptr("2024-06-01T11:00:00Z")
+	})
+	insertSession(t, d, "child1", "proj", func(s *Session) {
+		s.ParentSessionID = Ptr("parent1")
+		s.StartedAt = Ptr("2024-06-01T12:00:00Z")
+		s.EndedAt = Ptr("2024-06-01T13:00:00Z")
+	})
+	// A standalone session with no children.
+	insertSession(t, d, "standalone", "proj", func(s *Session) {
+		s.StartedAt = Ptr("2024-06-01T14:00:00Z")
+		s.EndedAt = Ptr("2024-06-01T15:00:00Z")
+	})
+
+	got, err := d.FindPruneCandidates(PruneFilter{
+		Project: "proj",
+	})
+	if err != nil {
+		t.Fatalf("FindPruneCandidates: %v", err)
+	}
+
+	ids := collectIDs(got)
+
+	// Parent should be excluded; child and standalone eligible.
+	if len(got) != 2 {
+		t.Fatalf("got %d candidates %v, want 2",
+			len(got), ids)
+	}
+	for _, s := range got {
+		if s.ID == "parent1" {
+			t.Errorf("parent1 should be excluded, "+
+				"got candidates: %v", ids)
+		}
+	}
 }
 
 func TestFindPruneCandidatesLikeEscaping(t *testing.T) {
@@ -1502,8 +1619,7 @@ func TestMigrationRace(t *testing.T) {
 			if strings.Contains(msg, "database is locked") ||
 				strings.Contains(msg, "database schema is locked") ||
 				strings.Contains(msg, "SQLITE_BUSY") ||
-				strings.Contains(msg, "SQLITE_LOCKED") ||
-				strings.Contains(msg, "no such file") {
+				strings.Contains(msg, "SQLITE_LOCKED") {
 				t.Logf("concurrent Open lock contention: %v", err)
 			} else {
 				t.Errorf("unexpected concurrent Open error: %v", err)
