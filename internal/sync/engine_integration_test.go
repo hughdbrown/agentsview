@@ -294,13 +294,13 @@ func TestSyncEngineHashSkip(t *testing.T) {
 	// First sync
 	runSyncAndAssert(t, env.engine, 1, 0)
 
-	// Verify hash was stored
-	size, hash, ok := env.db.GetSessionFileInfo("hash-test")
+	// Verify file metadata was stored
+	size, mtime, ok := env.db.GetSessionFileInfo("hash-test")
 	if !ok {
 		t.Fatal("file info not stored")
 	}
-	if hash == "" {
-		t.Fatal("hash not stored")
+	if mtime == 0 {
+		t.Fatal("mtime not stored")
 	}
 	if size == 0 {
 		t.Fatal("size not stored")
@@ -309,47 +309,40 @@ func TestSyncEngineHashSkip(t *testing.T) {
 	// Second sync — unchanged content → skipped
 	runSyncAndAssert(t, env.engine, 0, 1)
 
-	// Overwrite with same-size but different content.
+	// Overwrite with different content (changes mtime).
 	different := testjsonl.NewSessionBuilder().
 		AddClaudeUser(tsZero, "msg2").
 		String()
-
-	if len(different) != len(content) {
-		for len(different) < len(content) {
-			different += " "
-		}
-		different = different[:len(content)]
-	}
 	os.WriteFile(path, []byte(different), 0o644)
 
-	// Third sync — same size, different hash → re-synced
+	// Third sync — mtime changed → re-synced
 	runSyncAndAssert(t, env.engine, 1, 0)
 }
 
-func TestSyncEngineTombstone(t *testing.T) {
+func TestSyncEngineSkipCache(t *testing.T) {
 	env := setupTestEnv(t)
 
 	// Write malformed content that produces 0 valid messages
 	path := env.writeClaudeSession(
-		t, "test-proj", "tombstone-test.jsonl",
+		t, "test-proj", "skip-test.jsonl",
 		"not json at all\x00\x01",
 	)
 
-	// First sync — 0 valid messages
+	// First sync — file parsed (empty session stored)
 	stats := env.engine.SyncAll(nil)
 	if stats.TotalSessions != 1 {
 		t.Fatalf("total = %d, want 1", stats.TotalSessions)
 	}
 
-	// Second sync — unchanged, should be skipped
+	// Second sync — unchanged mtime, should be skipped
 	runSyncAndAssert(t, env.engine, 0, 1)
 
 	// Touch file (change mtime) but keep same content
 	time.Sleep(10 * time.Millisecond)
 	os.Chtimes(path, time.Now(), time.Now())
 
-	// Third sync — mtime changed but hash same → still skipped
-	runSyncAndAssert(t, env.engine, 0, 1)
+	// Third sync — mtime changed → re-synced (harmless)
+	runSyncAndAssert(t, env.engine, 1, 0)
 }
 
 func TestSyncEngineFileAppend(t *testing.T) {
@@ -404,7 +397,7 @@ func TestSyncSingleSessionHash(t *testing.T) {
 	)
 
 	env.engine.SyncAll(nil)
-	env.assertHashRoundTrip(t, "single-hash")
+	env.assertResyncRoundTrip(t, "single-hash")
 }
 
 func TestSyncSingleSessionHashCodex(t *testing.T) {
@@ -426,7 +419,56 @@ func TestSyncSingleSessionHashCodex(t *testing.T) {
 
 	env.engine.SyncAll(nil)
 	assertSessionState(t, env.db, sessionID, nil)
-	env.assertHashRoundTrip(t, sessionID)
+	env.assertResyncRoundTrip(t, sessionID)
+}
+
+func TestSyncSingleSessionCodexExecBypassesCache(
+	t *testing.T,
+) {
+	env := setupTestEnv(t)
+
+	uuid := "e5f6a7b8-5678-9012-cdef-123456789012"
+	// Exec-originated session: SyncAll skips these, but
+	// SyncSingleSession should still find them.
+	content := testjsonl.NewSessionBuilder().
+		AddCodexMeta(
+			tsEarly, uuid,
+			"/home/user/code/api", "codex_exec",
+		).
+		AddCodexMessage(tsEarlyS1, "user", "run ls").
+		AddCodexMessage(tsEarlyS5, "assistant", "done").
+		String()
+
+	env.writeCodexSession(
+		t, filepath.Join("2024", "01", "15"),
+		"rollout-20240115-"+uuid+".jsonl", content,
+	)
+
+	// SyncAll skips exec-originated sessions (nil result).
+	env.engine.SyncAll(nil)
+	sess, _ := env.db.GetSession(
+		context.Background(), "codex:"+uuid,
+	)
+	if sess != nil {
+		t.Fatal("exec session should not appear after SyncAll")
+	}
+
+	// SyncSingleSession should bypass the skip cache and
+	// parse with includeExec=true.
+	err := env.engine.SyncSingleSession("codex:" + uuid)
+	if err != nil {
+		t.Fatalf("SyncSingleSession: %v", err)
+	}
+
+	assertSessionState(
+		t, env.db, "codex:"+uuid,
+		func(sess *db.Session) {
+			if sess.Agent != "codex" {
+				t.Errorf("agent = %q, want codex",
+					sess.Agent)
+			}
+		},
+	)
 }
 
 func TestSyncEngineTombstoneClearOnMtimeChange(t *testing.T) {

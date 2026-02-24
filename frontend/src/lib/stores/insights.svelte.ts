@@ -62,9 +62,7 @@ class InsightsStore {
     const v = ++this.#version;
     this.loading = true;
     try {
-      const res = await listInsights({
-        project: this.project || undefined,
-      });
+      const res = await listInsights();
       if (this.#version === v) {
         this.items = res.insights;
         if (
@@ -101,8 +99,6 @@ class InsightsStore {
 
   setProject(project: string) {
     this.project = project;
-    this.selectedId = null;
-    this.load();
   }
 
   setAgent(agent: AgentName) {
