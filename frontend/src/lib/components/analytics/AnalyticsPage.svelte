@@ -40,24 +40,58 @@
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
   onMount(() => {
+    analytics.fetchAll();
     refreshTimer = setInterval(
       () => analytics.fetchAll(),
       REFRESH_INTERVAL_MS,
     );
   });
 
-  // Sync header project filter to analytics dashboard and
-  // handle the initial fetch. Runs on mount (setting the
-  // initial project) and whenever the header project changes.
-  // Uses untrack on analytics.project so that local
-  // drill-downs (clicking a project bar) don't re-trigger.
+  // Sync sidebar filters to analytics dashboard. Runs whenever
+  // the sidebar filters change. Uses untrack on analytics state
+  // so that local drill-downs don't re-trigger.
   $effect(() => {
     const headerProject = sessions.filters.project;
-    const current = untrack(() => analytics.project);
-    if (current !== headerProject) {
+    const headerAgent = sessions.filters.agent;
+    const headerRecentlyActive = sessions.filters.recentlyActive;
+    const headerMinUserMessages =
+      sessions.filters.minUserMessages;
+
+    const curProject = untrack(() => analytics.project);
+    const curAgent = untrack(() => analytics.agent);
+    const curRecentlyActive = untrack(
+      () => analytics.recentlyActive,
+    );
+    const curMinUser = untrack(
+      () => analytics.minUserMessages,
+    );
+
+    let changed = false;
+    if (curProject !== headerProject) {
       analytics.project = headerProject;
+      changed = true;
     }
-    untrack(() => analytics.fetchAll());
+    if (curAgent !== headerAgent) {
+      analytics.agent = headerAgent;
+      changed = true;
+    }
+
+    if (curRecentlyActive !== headerRecentlyActive) {
+      analytics.recentlyActive = headerRecentlyActive;
+      changed = true;
+    }
+
+    const minUserVal = headerMinUserMessages > 0
+      ? headerMinUserMessages
+      : 0;
+    if (curMinUser !== minUserVal) {
+      analytics.minUserMessages = minUserVal;
+      changed = true;
+    }
+
+    if (changed) {
+      untrack(() => analytics.fetchAll());
+    }
   });
 
   onDestroy(() => {

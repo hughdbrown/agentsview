@@ -91,7 +91,28 @@ class SyncStore {
   }
 
   triggerSync(onComplete?: () => void) {
-    if (this.syncing) return;
+    this.runSync(api.triggerSync, onComplete);
+  }
+
+  triggerResync(
+    onComplete?: () => void,
+    onError?: (err: Error) => void,
+  ): boolean {
+    return this.runSync(
+      api.triggerResync,
+      onComplete,
+      onError,
+    );
+  }
+
+  private runSync(
+    syncFn: (
+      onProgress?: (p: SyncProgress) => void,
+    ) => api.SyncHandle,
+    onComplete?: () => void,
+    onError?: (err: Error) => void,
+  ): boolean {
+    if (this.syncing) return false;
     this.syncing = true;
     this.progress = null;
 
@@ -100,7 +121,7 @@ class SyncStore {
       this.progress = null;
     };
 
-    const handle = api.triggerSync((p: SyncProgress) => {
+    const handle = syncFn((p: SyncProgress) => {
       this.progress = p;
     });
 
@@ -120,7 +141,14 @@ class SyncStore {
           return;
         }
         finalizeSync();
+        if (err instanceof Error) {
+          onError?.(err);
+        } else {
+          onError?.(new Error("Sync failed"));
+        }
       });
+
+    return true;
   }
 
   watchSession(sessionId: string, onUpdate: () => void) {

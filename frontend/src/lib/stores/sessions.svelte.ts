@@ -20,8 +20,10 @@ interface Filters {
   date: string;
   dateFrom: string;
   dateTo: string;
+  recentlyActive: boolean;
   minMessages: number;
   maxMessages: number;
+  minUserMessages: number;
 }
 
 function defaultFilters(): Filters {
@@ -31,8 +33,10 @@ function defaultFilters(): Filters {
     date: "",
     dateFrom: "",
     dateTo: "",
+    recentlyActive: false,
     minMessages: 0,
     maxMessages: 0,
+    minUserMessages: 0,
   };
 }
 
@@ -67,10 +71,17 @@ class SessionsStore {
       date: f.date || undefined,
       date_from: f.dateFrom || undefined,
       date_to: f.dateTo || undefined,
+      active_since: f.recentlyActive
+        ? new Date(
+            Date.now() - 24 * 60 * 60 * 1000,
+          ).toISOString()
+        : undefined,
       min_messages:
         f.minMessages > 0 ? f.minMessages : undefined,
       max_messages:
         f.maxMessages > 0 ? f.maxMessages : undefined,
+      min_user_messages:
+        f.minUserMessages > 0 ? f.minUserMessages : undefined,
     };
   }
 
@@ -89,6 +100,10 @@ class SessionsStore {
       params["max_messages"] ?? "",
       10,
     );
+    const minUserMsgs = parseInt(
+      params["min_user_messages"] ?? "",
+      10,
+    );
 
     this.filters = {
       project: params["project"] ?? "",
@@ -96,8 +111,12 @@ class SessionsStore {
       date: params["date"] ?? "",
       dateFrom: params["date_from"] ?? "",
       dateTo: params["date_to"] ?? "",
+      recentlyActive: params["active_since"] === "true",
       minMessages: Number.isFinite(minMsgs) ? minMsgs : 0,
       maxMessages: Number.isFinite(maxMsgs) ? maxMsgs : 0,
+      minUserMessages: Number.isFinite(minUserMsgs)
+        ? minUserMsgs
+        : 0,
     };
     this.activeSessionId = null;
     this.resetPagination();
@@ -234,6 +253,51 @@ class SessionsStore {
     this.resetPagination();
     this.load();
   }
+
+  setAgentFilter(agent: string) {
+    if (this.filters.agent === agent) {
+      this.filters.agent = "";
+    } else {
+      this.filters.agent = agent;
+    }
+    this.activeSessionId = null;
+    this.resetPagination();
+    this.load();
+  }
+
+  setRecentlyActiveFilter(active: boolean) {
+    this.filters.recentlyActive = active;
+    this.activeSessionId = null;
+    this.resetPagination();
+    this.load();
+  }
+
+  setMinUserMessagesFilter(n: number) {
+    this.filters.minUserMessages = n;
+    this.activeSessionId = null;
+    this.resetPagination();
+    this.load();
+  }
+
+  get hasActiveFilters(): boolean {
+    const f = this.filters;
+    return !!(
+      f.agent ||
+      f.recentlyActive ||
+      f.dateFrom ||
+      f.dateTo ||
+      f.date ||
+      f.minUserMessages > 0
+    );
+  }
+
+  clearSessionFilters() {
+    const project = this.filters.project;
+    this.filters = { ...defaultFilters(), project };
+    this.activeSessionId = null;
+    this.resetPagination();
+    this.load();
+  }
 }
 
 export function createSessionsStore(): SessionsStore {
@@ -260,6 +324,21 @@ function minString(
 
 function recencyKey(s: Session): string {
   return s.ended_at ?? s.started_at ?? s.created_at;
+}
+
+const RECENTLY_ACTIVE_MS = 10 * 60 * 1000;
+
+/** Ticking timestamp that updates every 30s so derived
+ *  recency checks stay reactive without manual triggers. */
+let now = $state(Date.now());
+setInterval(() => {
+  now = Date.now();
+}, 30_000);
+
+export function isRecentlyActive(session: Session): boolean {
+  const key = recencyKey(session);
+  const ts = new Date(key).getTime();
+  return now - ts < RECENTLY_ACTIVE_MS;
 }
 
 /**

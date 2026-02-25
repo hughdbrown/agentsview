@@ -2,8 +2,10 @@ package sync_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	gosync "sync"
 	"testing"
 	"time"
 
@@ -1238,4 +1240,91 @@ func TestSyncEngineOpenCodeToolCallReplace(t *testing.T) {
 		"run ls", "here are the files",
 	)
 	assertToolCallCount(t, env.db, agentviewID, 0)
+}
+
+// TestSyncEngineConcurrentSerialization verifies that
+// SyncAll and ResyncAll are serialized by syncMu.
+//
+// Strategy: SyncAll's progress callback blocks on a
+// barrier channel, holding the mutex. A second goroutine
+// launches ResyncAll and signals when it enters its own
+// progress callback. If the mutex works, the second
+// signal only arrives after the barrier is released.
+func TestSyncEngineConcurrentSerialization(t *testing.T) {
+	env := setupTestEnv(t)
+
+	for i := range 3 {
+		content := testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsZero, fmt.Sprintf("msg %d", i)).
+			String()
+		env.writeClaudeSession(
+			t, "proj",
+			fmt.Sprintf("conc-%d.jsonl", i), content,
+		)
+	}
+
+	// barrier blocks SyncAll's progress callback,
+	// keeping syncMu held.
+	barrier := make(chan struct{})
+	// syncAllEntered signals that SyncAll is inside
+	// the mutex-protected section.
+	syncAllEntered := make(chan struct{})
+	// resyncEntered signals that ResyncAll reached its
+	// progress callback (i.e. acquired the mutex).
+	resyncEntered := make(chan struct{})
+
+	var syncOnce, resyncOnce gosync.Once
+
+	syncProgress := func(_ sync.Progress) {
+		syncOnce.Do(func() {
+			close(syncAllEntered)
+			<-barrier // hold mutex until released
+		})
+	}
+
+	resyncProgress := func(_ sync.Progress) {
+		resyncOnce.Do(func() {
+			close(resyncEntered)
+		})
+	}
+
+	var wg gosync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		env.engine.SyncAll(syncProgress)
+	}()
+
+	// Wait until SyncAll is inside the locked section.
+	<-syncAllEntered
+
+	go func() {
+		defer wg.Done()
+		env.engine.ResyncAll(resyncProgress)
+	}()
+
+	// ResyncAll should be blocked on the mutex. Give it
+	// a moment to prove it can't enter.
+	select {
+	case <-resyncEntered:
+		t.Fatal(
+			"ResyncAll entered while SyncAll held mutex",
+		)
+	case <-time.After(50 * time.Millisecond):
+		// Expected: ResyncAll is blocked.
+	}
+
+	// Release the barrier so SyncAll finishes.
+	close(barrier)
+
+	// Now ResyncAll should proceed.
+	select {
+	case <-resyncEntered:
+		// Expected: ResyncAll acquired mutex.
+	case <-time.After(5 * time.Second):
+		t.Fatal("ResyncAll never entered after barrier release")
+	}
+
+	wg.Wait()
 }

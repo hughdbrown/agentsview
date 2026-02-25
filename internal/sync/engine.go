@@ -31,6 +31,7 @@ type Engine struct {
 	geminiDir     string
 	opencodeDir   string
 	machine       string
+	syncMu        gosync.Mutex // serializes full sync runs
 	mu            gosync.RWMutex
 	lastSync      time.Time
 	lastSyncStats SyncStats
@@ -245,7 +246,8 @@ func (e *Engine) classifyOnePath(
 		}
 	}
 
-	// Gemini: <geminiDir>/tmp/<hash>/chats/session-*.json
+	// Gemini: <geminiDir>/tmp/<dir>/chats/session-*.json
+	// <dir> is either a SHA-256 hash (old) or project name (new).
 	if e.geminiDir != "" {
 		if rel, ok := isUnder(e.geminiDir, path); ok {
 			parts := strings.Split(rel, sep)
@@ -259,16 +261,15 @@ func (e *Engine) classifyOnePath(
 				!strings.HasSuffix(name, ".json") {
 				return DiscoveredFile{}, false
 			}
-			hash := parts[1]
+			dirName := parts[1]
 			if *geminiProjects == nil {
 				*geminiProjects = buildGeminiProjectMap(
 					e.geminiDir,
 				)
 			}
-			project := (*geminiProjects)[hash]
-			if project == "" {
-				project = "unknown"
-			}
+			project := resolveGeminiProject(
+				dirName, *geminiProjects,
+			)
 			return DiscoveredFile{
 				Path:    path,
 				Project: project,
@@ -280,8 +281,48 @@ func (e *Engine) classifyOnePath(
 	return DiscoveredFile{}, false
 }
 
+// ResyncAll clears all skip caches and resets stored mtimes so
+// that the subsequent SyncAll re-parses every file. This is the
+// "full resync" path triggered from the UI when schema changes
+// or parser fixes require re-processing without deleting the DB.
+func (e *Engine) ResyncAll(
+	onProgress ProgressFunc,
+) SyncStats {
+	// Serialize with SyncAll so pre-steps and the sync
+	// itself run atomically.
+	e.syncMu.Lock()
+	defer e.syncMu.Unlock()
+
+	// 1. Clear in-memory skip cache.
+	e.skipMu.Lock()
+	e.skipCache = make(map[string]int64)
+	e.skipMu.Unlock()
+
+	// 2. Clear persisted skip cache.
+	if err := e.db.ReplaceSkippedFiles(
+		map[string]int64{},
+	); err != nil {
+		log.Printf("resync: clear skipped files: %v", err)
+	}
+
+	// 3. Zero all stored mtimes so shouldSkipFile returns false.
+	if err := e.db.ResetAllMtimes(); err != nil {
+		log.Printf("resync: reset mtimes: %v", err)
+	}
+
+	return e.syncAllLocked(onProgress)
+}
+
 // SyncAll discovers and syncs all session files from all agents.
 func (e *Engine) SyncAll(onProgress ProgressFunc) SyncStats {
+	e.syncMu.Lock()
+	defer e.syncMu.Unlock()
+	return e.syncAllLocked(onProgress)
+}
+
+func (e *Engine) syncAllLocked(
+	onProgress ProgressFunc,
+) SyncStats {
 	t0 := time.Now()
 	claude := DiscoverClaudeProjects(e.claudeDir)
 	codex := DiscoverCodexSessions(e.codexDir)
@@ -865,8 +906,9 @@ func toDBSession(pw pendingWrite) db.Session {
 		Project:         pw.sess.Project,
 		Machine:         pw.sess.Machine,
 		Agent:           string(pw.sess.Agent),
-		MessageCount:    pw.sess.MessageCount,
-		ParentSessionID: strPtr(pw.sess.ParentSessionID),
+		MessageCount:     pw.sess.MessageCount,
+		UserMessageCount: pw.sess.UserMessageCount,
+		ParentSessionID:  strPtr(pw.sess.ParentSessionID),
 		FilePath:        strPtr(pw.sess.File.Path),
 		FileSize:        int64Ptr(pw.sess.File.Size),
 		FileMtime:       int64Ptr(pw.sess.File.Mtime),

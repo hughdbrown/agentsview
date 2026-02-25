@@ -24,6 +24,7 @@ import {
   getAnalyticsTopSessions,
   type AnalyticsParams,
 } from "../api/client.js";
+import { sessions } from "./sessions.svelte.js";
 
 export type { Granularity, HeatmapMetric, TopSessionsMetric };
 
@@ -62,6 +63,9 @@ class AnalyticsStore {
   metric: HeatmapMetric = $state("messages");
   selectedDate: string | null = $state(null);
   project: string = $state("");
+  agent: string = $state("");
+  minUserMessages: number = $state(0);
+  recentlyActive: boolean = $state(false);
   selectedDow: number | null = $state(null);
   selectedHour: number | null = $state(null);
 
@@ -120,6 +124,9 @@ class AnalyticsStore {
     return (
       this.selectedDate !== null ||
       this.project !== "" ||
+      this.agent !== "" ||
+      this.minUserMessages > 0 ||
+      this.recentlyActive ||
       this.selectedDow !== null ||
       this.selectedHour !== null
     );
@@ -128,8 +135,37 @@ class AnalyticsStore {
   clearAllFilters() {
     this.selectedDate = null;
     this.project = "";
+    this.agent = "";
+    this.minUserMessages = 0;
+    this.recentlyActive = false;
     this.selectedDow = null;
     this.selectedHour = null;
+    sessions.filters.project = "";
+    sessions.filters.agent = "";
+    sessions.filters.minUserMessages = 0;
+    sessions.filters.recentlyActive = false;
+    sessions.load();
+    this.fetchAll();
+  }
+
+  clearAgent() {
+    this.agent = "";
+    sessions.filters.agent = "";
+    sessions.load();
+    this.fetchAll();
+  }
+
+  clearMinUserMessages() {
+    this.minUserMessages = 0;
+    sessions.filters.minUserMessages = 0;
+    sessions.load();
+    this.fetchAll();
+  }
+
+  clearRecentlyActive() {
+    this.recentlyActive = false;
+    sessions.filters.recentlyActive = false;
+    sessions.load();
     this.fetchAll();
   }
 
@@ -145,6 +181,8 @@ class AnalyticsStore {
 
   clearProject() {
     this.project = "";
+    sessions.filters.project = "";
+    sessions.load();
     this.fetchAll();
   }
 
@@ -177,6 +215,15 @@ class AnalyticsStore {
     if (includeProject && this.project) {
       p.project = this.project;
     }
+    if (this.agent) p.agent = this.agent;
+    if (this.minUserMessages > 0) {
+      p.min_user_messages = this.minUserMessages;
+    }
+    if (this.recentlyActive) {
+      p.active_since = new Date(
+        Date.now() - 24 * 60 * 60 * 1000,
+      ).toISOString();
+    }
     if (includeTime) {
       if (this.selectedDow !== null) p.dow = this.selectedDow;
       if (this.selectedHour !== null) {
@@ -202,6 +249,15 @@ class AnalyticsStore {
       };
       if (includeProject && this.project) {
         p.project = this.project;
+      }
+      if (this.agent) p.agent = this.agent;
+      if (this.minUserMessages > 0) {
+        p.min_user_messages = this.minUserMessages;
+      }
+      if (this.recentlyActive) {
+        p.active_since = new Date(
+          Date.now() - 24 * 60 * 60 * 1000,
+        ).toISOString();
       }
       if (includeTime) {
         if (this.selectedDow !== null) {

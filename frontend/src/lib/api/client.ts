@@ -94,8 +94,10 @@ export interface ListSessionsParams {
   date?: string;
   date_from?: string;
   date_to?: string;
+  active_since?: string;
   min_messages?: number;
   max_messages?: number;
+  min_user_messages?: number;
   cursor?: string;
   limit?: number;
 }
@@ -195,13 +197,14 @@ export interface SyncHandle {
   done: Promise<SyncStats>;
 }
 
-export function triggerSync(
+function streamSyncSSE(
+  path: string,
   onProgress?: (p: SyncProgress) => void,
 ): SyncHandle {
   const controller = new AbortController();
 
   const done = (async () => {
-    const res = await fetch(`${BASE}/sync`, {
+    const res = await fetch(`${BASE}${path}`, {
       method: "POST",
       signal: controller.signal,
     });
@@ -246,6 +249,18 @@ export function triggerSync(
   })();
 
   return { abort: () => controller.abort(), done };
+}
+
+export function triggerSync(
+  onProgress?: (p: SyncProgress) => void,
+): SyncHandle {
+  return streamSyncSSE("/sync", onProgress);
+}
+
+export function triggerResync(
+  onProgress?: (p: SyncProgress) => void,
+): SyncHandle {
+  return streamSyncSSE("/resync", onProgress);
 }
 
 /**
@@ -354,8 +369,11 @@ export interface AnalyticsParams {
   timezone?: string;
   machine?: string;
   project?: string;
+  agent?: string;
   dow?: number;
   hour?: number;
+  min_user_messages?: number;
+  active_since?: string;
 }
 
 export function getAnalyticsSummary(

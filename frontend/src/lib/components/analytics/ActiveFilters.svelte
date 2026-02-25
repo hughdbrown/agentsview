@@ -1,5 +1,6 @@
 <script lang="ts">
   import { analytics } from "../../stores/analytics.svelte.js";
+  import { agentColor } from "../../utils/agents.js";
 
   const DAY_LABELS = [
     "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
@@ -36,6 +37,9 @@
   const filterCount = $derived(
     (analytics.selectedDate !== null ? 1 : 0) +
     (analytics.project !== "" ? 1 : 0) +
+    (analytics.agent !== "" ? 1 : 0) +
+    (analytics.minUserMessages > 0 ? 1 : 0) +
+    (analytics.recentlyActive ? 1 : 0) +
     (hasTime ? 1 : 0)
   );
 </script>
@@ -82,6 +86,67 @@
           </svg>
         </span>
         {analytics.project}
+        <span class="chip-x">&times;</span>
+      </button>
+    {/if}
+
+    {#if analytics.agent}
+      <button
+        class="filter-chip"
+        onclick={() => analytics.clearAgent()}
+        title="Clear agent filter"
+      >
+        <span
+          class="agent-chip-dot"
+          style:background={agentColor(analytics.agent)}
+        ></span>
+        {analytics.agent}
+        <span class="chip-x">&times;</span>
+      </button>
+    {/if}
+
+    {#if analytics.minUserMessages > 0}
+      <button
+        class="filter-chip"
+        onclick={() => analytics.clearMinUserMessages()}
+        title="Clear min prompts filter"
+      >
+        <span class="chip-icon">
+          <svg width="10" height="10" viewBox="0 0 16 16"
+            fill="currentColor">
+            <path d="M5 8a1 1 0 11-2 0 1 1 0 012
+              0zm4 0a1 1 0 11-2 0 1 1 0 012
+              0zm3 1a1 1 0 100-2 1 1 0 000 2z"/>
+            <path d="M2.165 15.803l.02-.004c1.83-.363
+              2.948-.842 3.468-1.105A9.06 9.06 0
+              008 15c4.418 0 8-3.134 8-7s-3.582-7-8-7-8
+              3.134-8 7c0 1.76.743 3.37 1.97
+              4.6a10.437 10.437 0
+              01-.524 2.318l-.003.011a10.722 10.722 0
+              01-.244.637c-.079.186.074.394.272.362z"/>
+          </svg>
+        </span>
+        &ge;{analytics.minUserMessages} prompts
+        <span class="chip-x">&times;</span>
+      </button>
+    {/if}
+
+    {#if analytics.recentlyActive}
+      <button
+        class="filter-chip"
+        onclick={() => analytics.clearRecentlyActive()}
+        title="Clear recently active filter"
+      >
+        <span class="chip-icon">
+          <svg width="10" height="10" viewBox="0 0 16 16"
+            fill="currentColor">
+            <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm.5
+              3a.5.5 0 00-1 0v4a.5.5 0
+              00.146.354l2 2a.5.5 0 00.708-.708L8.5
+              7.793V4z"/>
+          </svg>
+        </span>
+        Active 24h
         <span class="chip-x">&times;</span>
       </button>
     {/if}
@@ -165,6 +230,13 @@
     display: flex;
     align-items: center;
     opacity: 0.7;
+  }
+
+  .agent-chip-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
   }
 
   .chip-x {

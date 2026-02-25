@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Session } from "../../api/types.js";
-  import { sessions } from "../../stores/sessions.svelte.js";
+  import { sessions, isRecentlyActive } from "../../stores/sessions.svelte.js";
   import { formatRelativeTime, truncate } from "../../utils/format.js";
+  import { agentColor as getAgentColor } from "../../utils/agents.js";
 
   interface Props {
     session: Session;
@@ -23,14 +24,10 @@
       : sessions.activeSessionId === session.id,
   );
 
+  let recentlyActive = $derived(isRecentlyActive(session));
+
   let agentColor = $derived(
-    session.agent === "codex"
-      ? "var(--accent-green)"
-      : session.agent === "copilot"
-        ? "var(--accent-amber)"
-        : session.agent === "opencode"
-          ? "var(--accent-purple)"
-          : "var(--accent-blue)",
+    getAgentColor(session.agent),
   );
 
   let displayName = $derived(
@@ -50,13 +47,17 @@
   data-session-id={session.id}
   onclick={() => sessions.selectSession(session.id)}
 >
-  <div class="agent-dot" style:background={agentColor}></div>
+  <div
+    class="agent-dot"
+    class:recently-active={recentlyActive}
+    style:background={agentColor}
+  ></div>
   <div class="session-info">
     <div class="session-name">{displayName}</div>
     <div class="session-meta">
       <span class="session-project">{session.project}</span>
       <span class="session-time">{timeStr}</span>
-      <span class="session-count">{session.message_count}</span>
+      <span class="session-count">{session.user_message_count}</span>
       {#if continuationCount > 1}
         <span class="continuation-badge">x{continuationCount}</span>
       {/if}
@@ -91,6 +92,25 @@
     height: 6px;
     border-radius: 50%;
     flex-shrink: 0;
+  }
+
+  .agent-dot.recently-active {
+    animation: pulse-glow 3s ease-in-out infinite;
+    will-change: box-shadow;
+  }
+
+  @keyframes pulse-glow {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 transparent;
+    }
+    50% {
+      box-shadow: 0 0 6px 3px color-mix(
+        in srgb,
+        var(--accent-green) 40%,
+        transparent
+      );
+    }
   }
 
   .session-info {
