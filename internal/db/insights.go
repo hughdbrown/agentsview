@@ -69,7 +69,7 @@ func (db *DB) InsertInsight(s Insight) (int64, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	res, err := db.writer.Exec(`
+	res, err := db.getWriter().Exec(`
 		INSERT INTO insights (
 			type, date_from, date_to, project,
 			agent, model, prompt, content
@@ -96,7 +96,7 @@ func (db *DB) ListInsights(
 		" ORDER BY created_at DESC, id DESC" +
 		" LIMIT " + fmt.Sprintf("%d", maxInsights)
 
-	rows, err := db.reader.QueryContext(ctx, query, args...)
+	rows, err := db.getReader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying insights: %w", err)
 	}
@@ -118,7 +118,7 @@ func (db *DB) ListInsights(
 func (db *DB) GetInsight(
 	ctx context.Context, id int64,
 ) (*Insight, error) {
-	row := db.reader.QueryRowContext(
+	row := db.getReader().QueryRowContext(
 		ctx,
 		"SELECT "+insightBaseCols+
 			" FROM insights WHERE id = ?",
@@ -136,11 +136,52 @@ func (db *DB) GetInsight(
 	return &s, nil
 }
 
+// CopyInsightsFrom copies all insights from the database at
+// sourcePath into this database using ATTACH/DETACH.
+func (db *DB) CopyInsightsFrom(sourcePath string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	// Pin a single connection for the ATTACH/INSERT/DETACH
+	// sequence. database/sql's pool doesn't guarantee the
+	// same underlying connection across separate Exec calls,
+	// and ATTACH is connection-scoped.
+	ctx := context.Background()
+	conn, err := db.getWriter().Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquiring connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(
+		ctx, "ATTACH DATABASE ? AS old_db", sourcePath,
+	); err != nil {
+		return fmt.Errorf("attaching source db: %w", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(
+			ctx, "DETACH DATABASE old_db",
+		)
+	}()
+
+	_, err = conn.ExecContext(ctx, `
+		INSERT OR IGNORE INTO insights
+			(type, date_from, date_to, project,
+			 agent, model, prompt, content, created_at)
+		SELECT type, date_from, date_to, project,
+			agent, model, prompt, content, created_at
+		FROM old_db.insights`)
+	if err != nil {
+		return fmt.Errorf("copying insights: %w", err)
+	}
+	return nil
+}
+
 // DeleteInsight removes an insight by ID.
 func (db *DB) DeleteInsight(id int64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	_, err := db.writer.Exec(
+	_, err := db.getWriter().Exec(
 		"DELETE FROM insights WHERE id = ?", id,
 	)
 	return err

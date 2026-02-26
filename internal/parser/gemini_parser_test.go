@@ -21,13 +21,13 @@ func runGeminiParserTest(t *testing.T, content string) (*ParsedSession, []Parsed
 func TestParseGeminiSession_Basic(t *testing.T) {
 	content := loadFixture(t, "gemini/standard_session.json")
 	sess, msgs := runGeminiParserTest(t, content)
-	
+
 	require.NotNil(t, sess)
 	assertMessageCount(t, len(msgs), 4)
 	assertMessageCount(t, sess.MessageCount, 4)
 	assertSessionMeta(t, sess, "gemini:sess-uuid-1", "my_project", AgentGemini)
 	assert.Equal(t, "Fix the login bug", sess.FirstMessage)
-	
+
 	assertMessage(t, msgs[0], RoleUser, "Fix the login bug")
 	assertMessage(t, msgs[1], RoleAssistant, "Looking at")
 	assert.Equal(t, 0, msgs[0].Ordinal)
@@ -38,12 +38,19 @@ func TestParseGeminiSession_ToolCalls(t *testing.T) {
 	t.Run("basic tool calls", func(t *testing.T) {
 		content := loadFixture(t, "gemini/tool_calls.json")
 		_, msgs := runGeminiParserTest(t, content)
-		
+
 		assert.Equal(t, 2, len(msgs))
 		assert.True(t, msgs[1].HasToolUse)
 		assert.True(t, msgs[1].HasThinking)
-		assert.True(t, strings.Contains(msgs[1].Content, "[Thinking: Planning]"))
+		assert.True(t, strings.Contains(msgs[1].Content, "[Thinking]\nPlanning\n"))
+		assert.True(t, strings.Contains(msgs[1].Content, "[/Thinking]"))
 		assert.True(t, strings.Contains(msgs[1].Content, "[Read: main.go]"))
+		// Chronological: thinking before content before tool calls
+		thinkIdx := strings.Index(msgs[1].Content, "[Thinking]")
+		contentIdx := strings.Index(msgs[1].Content, "Let me read it.")
+		toolIdx := strings.Index(msgs[1].Content, "[Read:")
+		assert.Less(t, thinkIdx, contentIdx)
+		assert.Less(t, contentIdx, toolIdx)
 		assertToolCalls(t, msgs[1].ToolCalls, []ParsedToolCall{{ToolName: "read_file", Category: "Read"}})
 	})
 
@@ -59,6 +66,37 @@ func TestParseGeminiSession_ToolCalls(t *testing.T) {
 		assert.True(t, msgs[1].HasToolUse)
 		assertToolCalls(t, msgs[1].ToolCalls, nil)
 	})
+}
+
+func TestParseGeminiSession_ThinkingWithText(t *testing.T) {
+	content := loadFixture(t, "gemini/thinking_only.json")
+	_, msgs := runGeminiParserTest(t, content)
+
+	require.Equal(t, 2, len(msgs))
+
+	msg := msgs[1]
+	assert.True(t, msg.HasThinking)
+	assert.False(t, msg.HasToolUse)
+
+	// Thinking and content should be separated by blank lines
+	assert.Contains(t, msg.Content, "[Thinking]")
+	assert.Contains(t, msg.Content, "Here is how it works")
+
+	// Verify blank-line separation between thinking blocks
+	// and between thinking and content
+	thinkIdx := strings.LastIndex(
+		msg.Content, "[Thinking]",
+	)
+	contentIdx := strings.Index(
+		msg.Content,
+		"Here is how it works",
+	)
+	assert.Less(t, thinkIdx, contentIdx)
+
+	// The text between last thinking block and response
+	// should contain a blank line
+	between := msg.Content[thinkIdx:contentIdx]
+	assert.Contains(t, between, "\n\n")
 }
 
 func TestParseGeminiSession_EdgeCases(t *testing.T) {
@@ -80,13 +118,13 @@ func TestParseGeminiSession_EdgeCases(t *testing.T) {
 		require.NotNil(t, sess)
 		assert.Equal(t, 303, len(sess.FirstMessage))
 	})
-	
+
 	t.Run("malformed JSON", func(t *testing.T) {
 		path := createTestFile(t, "session.json", "not valid json {{{")
 		_, _, err := ParseGeminiSession(path, "my_project", "local")
 		assert.Error(t, err)
 	})
-	
+
 	t.Run("missing file", func(t *testing.T) {
 		_, _, err := ParseGeminiSession("/nonexistent.json", "my_project", "local")
 		assert.Error(t, err)

@@ -143,7 +143,7 @@ func TestExtractTextContent(t *testing.T) {
 		{
 			"thinking block",
 			`[{"type":"thinking","thinking":"Let me think..."}]`,
-			"[Thinking]\nLet me think...", true, false, nil,
+			"[Thinking]\nLet me think...\n[/Thinking]", true, false, nil,
 		},
 		{
 			"tool_use block",
@@ -685,10 +685,6 @@ func TestIsClaudeSystemMessage(t *testing.T) {
 	}
 }
 
-
-
-
-
 func TestCodexUserMessageCount(t *testing.T) {
 	content := testjsonl.JoinJSONL(
 		testjsonl.CodexSessionMetaJSON(
@@ -893,13 +889,11 @@ func TestExtractClaudeProjectHints(t *testing.T) {
 	})
 }
 
-
-
 func TestFormatGeminiToolCall(t *testing.T) {
 	tests := []struct {
 		toolName string
-		json string
-		want string
+		json     string
+		want     string
 	}{
 		{
 			"read_file",

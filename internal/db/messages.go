@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 )
 
 const (
@@ -94,7 +96,7 @@ func (db *DB) GetMessages(
 		ORDER BY ordinal %s
 		LIMIT ?`, selectMessageCols, op, dir)
 
-	rows, err := db.reader.QueryContext(
+	rows, err := db.getReader().QueryContext(
 		ctx, query, sessionID, from, limit,
 	)
 	if err != nil {
@@ -115,7 +117,7 @@ func (db *DB) GetMessages(
 func (db *DB) GetAllMessages(
 	ctx context.Context, sessionID string,
 ) ([]Message, error) {
-	rows, err := db.reader.QueryContext(ctx, fmt.Sprintf(`
+	rows, err := db.getReader().QueryContext(ctx, fmt.Sprintf(`
 		SELECT %s
 		FROM messages
 		WHERE session_id = ?
@@ -146,7 +148,7 @@ func (db *DB) GetMinimap(
 func (db *DB) GetMinimapFrom(
 	ctx context.Context, sessionID string, from int,
 ) ([]MinimapEntry, error) {
-	rows, err := db.reader.QueryContext(ctx, `
+	rows, err := db.getReader().QueryContext(ctx, `
 		SELECT ordinal, role, content_length, has_thinking, has_tool_use
 		FROM messages
 		WHERE session_id = ? AND ordinal >= ?
@@ -280,16 +282,27 @@ func insertToolCallsTx(
 	return nil
 }
 
+const slowOpThreshold = 100 * time.Millisecond
+
 // InsertMessages batch-inserts messages for a session.
 func (db *DB) InsertMessages(msgs []Message) error {
 	if len(msgs) == 0 {
 		return nil
 	}
+	t := time.Now()
+	defer func() {
+		if d := time.Since(t); d > slowOpThreshold {
+			log.Printf(
+				"db: InsertMessages (%d msgs): %s",
+				len(msgs), d.Round(time.Millisecond),
+			)
+		}
+	}()
 
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	tx, err := db.writer.Begin()
+	tx, err := db.getWriter().Begin()
 	if err != nil {
 		return fmt.Errorf("beginning tx: %w", err)
 	}
@@ -311,7 +324,7 @@ func (db *DB) InsertMessages(msgs []Message) error {
 // or -1 if the session has no messages.
 func (db *DB) MaxOrdinal(sessionID string) int {
 	var n sql.NullInt64
-	err := db.reader.QueryRow(
+	err := db.getReader().QueryRow(
 		"SELECT MAX(ordinal) FROM messages"+
 			" WHERE session_id = ?",
 		sessionID,
@@ -322,25 +335,26 @@ func (db *DB) MaxOrdinal(sessionID string) int {
 	return int(n.Int64)
 }
 
-// DeleteSessionMessages removes all messages for a session.
-func (db *DB) DeleteSessionMessages(sessionID string) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-	_, err := db.writer.Exec(
-		"DELETE FROM messages WHERE session_id = ?", sessionID,
-	)
-	return err
-}
-
 // ReplaceSessionMessages deletes existing and inserts new messages
 // in a single transaction.
 func (db *DB) ReplaceSessionMessages(
 	sessionID string, msgs []Message,
 ) error {
+	t := time.Now()
+	defer func() {
+		if d := time.Since(t); d > slowOpThreshold {
+			log.Printf(
+				"db: ReplaceSessionMessages %s (%d msgs): %s",
+				sessionID, len(msgs),
+				d.Round(time.Millisecond),
+			)
+		}
+	}()
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	tx, err := db.writer.Begin()
+	tx, err := db.getWriter().Begin()
 	if err != nil {
 		return fmt.Errorf("beginning tx: %w", err)
 	}
@@ -426,7 +440,7 @@ func (db *DB) attachToolCallsBatch(
 		ORDER BY id`,
 		strings.Join(placeholders, ","))
 
-	rows, err := db.reader.QueryContext(ctx, query, args...)
+	rows, err := db.getReader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("querying tool_calls: %w", err)
 	}
@@ -490,7 +504,7 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 // MessageCount returns the number of messages for a session.
 func (db *DB) MessageCount(sessionID string) (int, error) {
 	var count int
-	err := db.reader.QueryRow(
+	err := db.getReader().QueryRow(
 		"SELECT COUNT(*) FROM messages WHERE session_id = ?",
 		sessionID,
 	).Scan(&count)
@@ -501,7 +515,7 @@ func (db *DB) MessageCount(sessionID string) (int, error) {
 func (db *DB) GetMessageByOrdinal(
 	sessionID string, ordinal int,
 ) (*Message, error) {
-	row := db.reader.QueryRow(fmt.Sprintf(`
+	row := db.getReader().QueryRow(fmt.Sprintf(`
 		SELECT %s
 		FROM messages
 		WHERE session_id = ? AND ordinal = ?`, selectMessageCols),

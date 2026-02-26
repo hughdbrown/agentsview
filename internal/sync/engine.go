@@ -31,7 +31,7 @@ type Engine struct {
 	geminiDirs    []string
 	opencodeDirs  []string
 	machine       string
-	syncMu        gosync.Mutex // serializes full sync runs
+	syncMu        gosync.Mutex // serializes all sync operations
 	mu            gosync.RWMutex
 	lastSync      time.Time
 	lastSyncStats SyncStats
@@ -100,8 +100,13 @@ func (e *Engine) SyncPaths(paths []string) {
 		return
 	}
 
+	e.syncMu.Lock()
+	defer e.syncMu.Unlock()
+
 	results := e.startWorkers(files)
-	stats := e.collectAndBatch(results, len(files), nil)
+	stats := e.collectAndBatch(
+		results, len(files), nil,
+	)
 	e.persistSkipCache()
 
 	e.mu.Lock()
@@ -306,36 +311,193 @@ func (e *Engine) classifyOnePath(
 	return DiscoveredFile{}, false
 }
 
-// ResyncAll clears all skip caches and resets stored mtimes so
-// that the subsequent SyncAll re-parses every file. This is the
-// "full resync" path triggered from the UI when schema changes
-// or parser fixes require re-processing without deleting the DB.
+// resyncTempSuffix is appended to the original DB path to
+// form the temp database path during resync.
+const resyncTempSuffix = "-resync"
+
+// ResyncAll builds a fresh database from scratch, syncs all
+// sessions into it, copies insights from the old DB, then
+// atomically swaps the files and reopens the original DB
+// handle. This avoids the per-row trigger overhead of bulk
+// deleting hundreds of thousands of messages in place.
 func (e *Engine) ResyncAll(
 	onProgress ProgressFunc,
 ) SyncStats {
-	// Serialize with SyncAll so pre-steps and the sync
-	// itself run atomically.
 	e.syncMu.Lock()
 	defer e.syncMu.Unlock()
+
+	origDB := e.db
+	origPath := origDB.Path()
+	tempPath := origPath + resyncTempSuffix
+
+	// Snapshot old file-backed session count to detect
+	// empty-discovery. Uses file-backed count (excludes
+	// OpenCode) so OpenCode-only datasets don't trigger the
+	// guard. Fail closed: if we can't query, assume old DB
+	// has file-backed data worth protecting.
+	ctx := context.Background()
+	oldFileSessions, err := origDB.FileBackedSessionCount(ctx)
+	if err != nil {
+		log.Printf("resync: get old file count: %v", err)
+		oldFileSessions = 1
+	}
+
+	// Clean up stale temp DB from a prior crash.
+	removeTempDB(tempPath)
 
 	// 1. Clear in-memory skip cache.
 	e.skipMu.Lock()
 	e.skipCache = make(map[string]int64)
 	e.skipMu.Unlock()
 
-	// 2. Clear persisted skip cache.
-	if err := e.db.ReplaceSkippedFiles(
-		map[string]int64{},
-	); err != nil {
-		log.Printf("resync: clear skipped files: %v", err)
+	// 2. Open a fresh DB at the temp path.
+	newDB, err := db.Open(tempPath)
+	if err != nil {
+		log.Printf("resync: open temp db: %v", err)
+		stats := SyncStats{
+			Warnings: []string{
+				"resync failed: " + err.Error(),
+			},
+		}
+		e.mu.Lock()
+		e.lastSyncStats = stats
+		e.mu.Unlock()
+		return stats
 	}
 
-	// 3. Zero all stored mtimes so shouldSkipFile returns false.
-	if err := e.db.ResetAllMtimes(); err != nil {
-		log.Printf("resync: reset mtimes: %v", err)
+	// 3. Point engine at newDB and sync into it.
+	e.db = newDB
+	stats := e.syncAllLocked(onProgress)
+	e.db = origDB // restore immediately
+
+	// Abort swap when the fresh DB would be worse than the
+	// original:
+	// - nothing synced at all (empty discovery, or all skipped)
+	//   when old DB had data
+	// - more files failed than succeeded (permission errors,
+	//   disk issues)
+	// A few permanent parse failures are tolerated since those
+	// files were broken in the old DB too.
+	emptyDiscovery := stats.filesDiscovered == 0 &&
+		stats.filesOK == 0 &&
+		oldFileSessions > 0
+	abortSwap := emptyDiscovery ||
+		(stats.Synced == 0 && stats.TotalSessions > 0) ||
+		(stats.Failed > 0 && stats.Failed > stats.filesOK)
+	if abortSwap {
+		log.Printf(
+			"resync: aborting swap, %d synced / %d failed / %d total",
+			stats.Synced, stats.Failed, stats.TotalSessions,
+		)
+		newDB.Close()
+		removeTempDB(tempPath)
+		stats.Warnings = append(stats.Warnings, fmt.Sprintf(
+			"resync aborted: %d synced, %d failed",
+			stats.Synced, stats.Failed,
+		))
+
+		e.mu.Lock()
+		e.lastSyncStats = stats
+		e.mu.Unlock()
+		return stats
 	}
 
-	return e.syncAllLocked(onProgress)
+	// 4. Close origDB connections first to quiesce writes,
+	// then copy insights into newDB (which is still open).
+	// This ensures no insight writes land in the old DB
+	// after the copy.
+	if err := origDB.CloseConnections(); err != nil {
+		log.Printf("resync: close orig db: %v", err)
+		stats.Warnings = append(stats.Warnings,
+			"close before swap failed: "+err.Error(),
+		)
+		newDB.Close()
+		removeTempDB(tempPath)
+		// Connections may be partially closed; reopen to
+		// restore service before returning.
+		if rerr := origDB.Reopen(); rerr != nil {
+			log.Printf("resync: recovery reopen: %v", rerr)
+		}
+		e.mu.Lock()
+		e.lastSyncStats = stats
+		e.mu.Unlock()
+		return stats
+	}
+
+	// origDB connections are now closed; copy insights into
+	// newDB (still open) from the quiesced old DB file.
+	tInsights := time.Now()
+	if err := newDB.CopyInsightsFrom(origPath); err != nil {
+		log.Printf("resync: copy insights: %v", err)
+		stats.Warnings = append(stats.Warnings,
+			"insights copy failed, aborting swap: "+
+				err.Error(),
+		)
+		newDB.Close()
+		removeTempDB(tempPath)
+		if rerr := origDB.Reopen(); rerr != nil {
+			log.Printf("resync: recovery reopen: %v", rerr)
+		}
+		e.mu.Lock()
+		e.lastSyncStats = stats
+		e.mu.Unlock()
+		return stats
+	}
+	log.Printf(
+		"resync: copy insights: %s",
+		time.Since(tInsights).Round(time.Millisecond),
+	)
+
+	// 5. Close newDB and swap files, then reopen origDB.
+	newDB.Close()
+
+	removeWAL(origPath)
+
+	if err := os.Rename(tempPath, origPath); err != nil {
+		log.Printf("resync: rename temp db: %v", err)
+		stats.Warnings = append(stats.Warnings,
+			"resync swap failed: "+err.Error(),
+		)
+		removeTempDB(tempPath)
+		// Restore service even on rename failure.
+		if rerr := origDB.Reopen(); rerr != nil {
+			log.Printf("resync: recovery reopen: %v", rerr)
+		}
+		e.mu.Lock()
+		e.lastSyncStats = stats
+		e.mu.Unlock()
+		return stats
+	}
+	removeWAL(tempPath)
+
+	if err := origDB.Reopen(); err != nil {
+		log.Printf("resync: reopen db: %v", err)
+		stats.Warnings = append(stats.Warnings,
+			"reopen after resync failed: "+err.Error(),
+		)
+	}
+
+	// 6. Persist skip cache into the new DB.
+	e.persistSkipCache()
+
+	e.mu.Lock()
+	e.lastSyncStats = stats
+	e.mu.Unlock()
+
+	return stats
+}
+
+// removeTempDB removes a temp database and its WAL/SHM files.
+func removeTempDB(path string) {
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		os.Remove(path + suffix)
+	}
+}
+
+// removeWAL removes WAL and SHM files for a database path.
+func removeWAL(path string) {
+	os.Remove(path + "-wal")
+	os.Remove(path + "-shm")
 }
 
 // SyncAll discovers and syncs all session files from all agents.
@@ -392,7 +554,9 @@ func (e *Engine) syncAllLocked(
 
 	tWorkers := time.Now()
 	results := e.startWorkers(all)
-	stats := e.collectAndBatch(results, len(all), onProgress)
+	stats := e.collectAndBatch(
+		results, len(all), onProgress,
+	)
 	if verbose {
 		log.Printf(
 			"file sync: %d synced, %d skipped in %s",
@@ -505,12 +669,6 @@ func (e *Engine) syncOneOpenCode(dir string) []pendingWrite {
 		})
 	}
 
-	if len(pending) > 0 {
-		log.Printf(
-			"sync: %d opencode session(s) updated",
-			len(pending),
-		)
-	}
 	return pending
 }
 
@@ -550,6 +708,7 @@ func (e *Engine) collectAndBatch(
 ) SyncStats {
 	var stats SyncStats
 	stats.TotalSessions = total
+	stats.filesDiscovered = total
 
 	progress := Progress{
 		Phase:         PhaseSyncing,
@@ -562,6 +721,7 @@ func (e *Engine) collectAndBatch(
 		r := <-results
 
 		if r.err != nil {
+			stats.RecordFailed()
 			if r.mtime != 0 {
 				e.cacheSkip(r.path, r.mtime)
 			}
@@ -585,6 +745,7 @@ func (e *Engine) collectAndBatch(
 			continue
 		}
 		e.clearSkip(r.path)
+		stats.filesOK++
 
 		for _, pr := range r.results {
 			pending = append(pending, pendingWrite{
@@ -1073,6 +1234,9 @@ func (e *Engine) FindSourceFile(sessionID string) string {
 // Unlike the bulk SyncAll path, this includes exec-originated
 // Codex sessions and uses the existing DB project as fallback.
 func (e *Engine) SyncSingleSession(sessionID string) error {
+	e.syncMu.Lock()
+	defer e.syncMu.Unlock()
+
 	if strings.HasPrefix(sessionID, "opencode:") {
 		return e.syncSingleOpenCode(sessionID)
 	}

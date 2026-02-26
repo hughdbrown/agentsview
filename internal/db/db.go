@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -43,13 +44,28 @@ END;
 `
 
 // DB manages a write connection and a read-only pool.
+// The reader and writer fields use atomic.Pointer so that
+// concurrent HTTP handler goroutines can safely read while
+// Reopen/CloseConnections swap the underlying *sql.DB.
 type DB struct {
-	writer *sql.DB
-	reader *sql.DB
+	path   string
+	writer atomic.Pointer[sql.DB]
+	reader atomic.Pointer[sql.DB]
 	mu     sync.Mutex // serializes writes
 
 	cursorMu     sync.RWMutex
 	cursorSecret []byte
+}
+
+// getReader returns the current read-only connection pool.
+func (db *DB) getReader() *sql.DB { return db.reader.Load() }
+
+// getWriter returns the current write connection.
+func (db *DB) getWriter() *sql.DB { return db.writer.Load() }
+
+// Path returns the file path of the database.
+func (db *DB) Path() string {
+	return db.path
 }
 
 // SetCursorSecret updates the secret key used for cursor signing.
@@ -232,7 +248,9 @@ func openAndInit(path string) (*DB, error) {
 	}
 	reader.SetMaxOpenConns(4)
 
-	db := &DB{writer: writer, reader: reader}
+	db := &DB{path: path}
+	db.writer.Store(writer)
+	db.reader.Store(reader)
 
 	db.cursorSecret = make([]byte, 32)
 	if _, err := rand.Read(db.cursorSecret); err != nil {
@@ -250,41 +268,90 @@ func openAndInit(path string) (*DB, error) {
 	return db, nil
 }
 
+// DropFTS drops the FTS table and its triggers. This makes
+// bulk message delete+reinsert fast by avoiding per-row FTS
+// index updates. Call RebuildFTS after to restore search.
+func (db *DB) DropFTS() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	stmts := []string{
+		"DROP TRIGGER IF EXISTS messages_ai",
+		"DROP TRIGGER IF EXISTS messages_ad",
+		"DROP TRIGGER IF EXISTS messages_au",
+		"DROP TABLE IF EXISTS messages_fts",
+	}
+	w := db.getWriter()
+	for _, s := range stmts {
+		if _, err := w.Exec(s); err != nil {
+			return fmt.Errorf("drop fts (%s): %w", s, err)
+		}
+	}
+	return nil
+}
+
+// RebuildFTS recreates the FTS table, triggers, and
+// repopulates the index from the messages table.
+func (db *DB) RebuildFTS() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	w := db.getWriter()
+	if _, err := w.Exec(schemaFTS); err != nil {
+		return fmt.Errorf("recreate fts: %w", err)
+	}
+	_, err := w.Exec(
+		"INSERT INTO messages_fts(messages_fts)" +
+			" VALUES('rebuild')",
+	)
+	if err != nil {
+		return fmt.Errorf("rebuild fts index: %w", err)
+	}
+	return nil
+}
+
 // HasFTS checks if Full Text Search is available.
 func (db *DB) HasFTS() bool {
 	// We need to actually try to access the table, because it might exist
 	// in sqlite_master but fail to load if the fts5 module is missing
 	// in the current runtime.
-	_, err := db.reader.Exec("SELECT 1 FROM messages_fts LIMIT 1")
+	_, err := db.getReader().Exec(
+		"SELECT 1 FROM messages_fts LIMIT 1",
+	)
 	return err == nil
 }
 
 func (db *DB) init() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	if _, err := db.writer.Exec(schemaSQL); err != nil {
+	w := db.getWriter()
+	if _, err := w.Exec(schemaSQL); err != nil {
 		return err
 	}
 
 	// Check if FTS table exists before trying to create it
 	var ftsCount int
-	if err := db.writer.QueryRow(
-		"SELECT count(*) FROM sqlite_master WHERE type='table' AND name='messages_fts'",
+	if err := w.QueryRow(
+		"SELECT count(*) FROM sqlite_master" +
+			" WHERE type='table' AND name='messages_fts'",
 	).Scan(&ftsCount); err != nil {
 		return fmt.Errorf("checking fts table: %w", err)
 	}
 	hadFTS := ftsCount > 0
 
-	// Attempt to initialize FTS. Failure is non-fatal (might be missing module).
-	if _, err := db.writer.Exec(schemaFTS); err != nil {
-		// Only ignore "no such module" error
-		if !strings.Contains(err.Error(), "no such module") {
+	// Attempt to initialize FTS. Failure is non-fatal
+	// (might be missing module).
+	if _, err := w.Exec(schemaFTS); err != nil {
+		if !strings.Contains(
+			err.Error(), "no such module",
+		) {
 			return fmt.Errorf("initializing FTS: %w", err)
 		}
 	} else if !hadFTS {
-		// Schema init succeeded and we didn't have FTS before.
-		// We need to populate the index for existing messages.
-		if _, err := db.writer.Exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"); err != nil {
+		// Schema init succeeded and we didn't have FTS
+		// before. Populate the index for existing messages.
+		if _, err := w.Exec(
+			"INSERT INTO messages_fts(messages_fts)" +
+				" VALUES('rebuild')",
+		); err != nil {
 			return fmt.Errorf("backfilling FTS: %w", err)
 		}
 	}
@@ -294,7 +361,59 @@ func (db *DB) init() error {
 
 // Close closes both writer and reader connections.
 func (db *DB) Close() error {
-	return errors.Join(db.writer.Close(), db.reader.Close())
+	return errors.Join(
+		db.getWriter().Close(),
+		db.getReader().Close(),
+	)
+}
+
+// CloseConnections closes both connections without reopening,
+// releasing file locks so the database file can be renamed.
+// Callers must call Reopen afterwards to restore service.
+func (db *DB) CloseConnections() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return errors.Join(
+		db.getWriter().Close(),
+		db.getReader().Close(),
+	)
+}
+
+// Reopen closes and reopens both connections to the same
+// path. Used after an atomic file swap to pick up the new
+// database contents. Preserves cursorSecret.
+func (db *DB) Reopen() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.reopenLocked()
+}
+
+// reopenLocked performs the reopen while db.mu is already
+// held. New connections are opened before closing old ones
+// so the struct never points at closed handles on failure.
+func (db *DB) reopenLocked() error {
+	writer, err := sql.Open(
+		"sqlite3", makeDSN(db.path, false),
+	)
+	if err != nil {
+		return fmt.Errorf("reopening writer: %w", err)
+	}
+	writer.SetMaxOpenConns(1)
+
+	reader, err := sql.Open(
+		"sqlite3", makeDSN(db.path, true),
+	)
+	if err != nil {
+		writer.Close()
+		return fmt.Errorf("reopening reader: %w", err)
+	}
+	reader.SetMaxOpenConns(4)
+
+	oldWriter := db.writer.Swap(writer)
+	oldReader := db.reader.Swap(reader)
+	_ = oldWriter.Close()
+	_ = oldReader.Close()
+	return nil
 }
 
 // Update executes fn within a write lock and transaction.
@@ -304,7 +423,7 @@ func (db *DB) Update(fn func(tx *sql.Tx) error) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	tx, err := db.writer.Begin()
+	tx, err := db.getWriter().Begin()
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
@@ -318,5 +437,5 @@ func (db *DB) Update(fn func(tx *sql.Tx) error) error {
 
 // Reader returns the read-only connection pool.
 func (db *DB) Reader() *sql.DB {
-	return db.reader
+	return db.getReader()
 }

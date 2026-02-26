@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	gosync "sync"
 	"testing"
@@ -1602,4 +1603,713 @@ func TestSyncSmallGapRetry(t *testing.T) {
 	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1, Synced: 1, Skipped: 0})
 
 	assertSessionMessageCount(t, env.db, "retry-uuid", 4)
+}
+
+func TestResyncAllReplacesMessageContent(t *testing.T) {
+	env := setupTestEnv(t)
+
+	sessionID := "gem-resync-test"
+	hash := "resync123"
+
+	content := testjsonl.GeminiSessionJSON(
+		sessionID, hash, tsEarly, tsEarlyS5,
+		[]map[string]any{
+			testjsonl.GeminiUserMsg(
+				"u1", tsEarly, "Explain this code",
+			),
+			testjsonl.GeminiAssistantMsg(
+				"a1", tsEarlyS5, "Here is the explanation.",
+				&testjsonl.GeminiMsgOpts{
+					Thoughts: []testjsonl.GeminiThought{{
+						Subject:     "Analysis",
+						Description: "Reading the code",
+						Timestamp:   tsEarlyS1,
+					}},
+				},
+			),
+		},
+	)
+
+	relPath := filepath.Join(
+		"tmp", hash, "chats", "session-001.json",
+	)
+	env.writeGeminiSession(t, relPath, content)
+
+	// Initial sync.
+	runSyncAndAssert(t, env.engine, sync.SyncStats{
+		TotalSessions: 1, Synced: 1,
+	})
+
+	fullID := "gemini:" + sessionID
+	msgs := fetchMessages(t, env.db, fullID)
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+
+	// Simulate a parser change by directly modifying message
+	// content in the DB. This mirrors what happens when the Go
+	// parser is updated (e.g. thinking format change) but the
+	// source files on disk are unchanged.
+	err := env.db.Update(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			"UPDATE messages SET content = ?"+
+				" WHERE session_id = ? AND ordinal = 1",
+			"stale content from old parser",
+			fullID,
+		)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("update message content: %v", err)
+	}
+
+	// Normal SyncAll should skip (file unchanged on disk).
+	stats := env.engine.SyncAll(nil)
+	if stats.Skipped != 1 {
+		t.Fatalf("expected 1 skip, got %d", stats.Skipped)
+	}
+	msgs = fetchMessages(t, env.db, fullID)
+	if !strings.Contains(msgs[1].Content, "stale content") {
+		t.Fatal("SyncAll should not have replaced content")
+	}
+
+	// Capture FTS state before resync so a regression that
+	// breaks FTS isn't masked by HasFTS() returning false
+	// post-resync.
+	hadFTS := env.db.HasFTS()
+
+	// ResyncAll should re-parse and replace message content.
+	env.engine.ResyncAll(nil)
+	msgs = fetchMessages(t, env.db, fullID)
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages after resync, want 2",
+			len(msgs))
+	}
+	if strings.Contains(msgs[1].Content, "stale content") {
+		t.Error(
+			"ResyncAll did not replace message content",
+		)
+	}
+	if !strings.Contains(
+		msgs[1].Content, "Here is the explanation.",
+	) {
+		t.Errorf(
+			"unexpected content after resync: %q",
+			msgs[1].Content,
+		)
+	}
+
+	// FTS search should work after resync (index was dropped
+	// and rebuilt).
+	if hadFTS {
+		if !env.db.HasFTS() {
+			t.Fatal(
+				"FTS available before resync but not after",
+			)
+		}
+		page, err := env.db.Search(
+			context.Background(),
+			db.SearchFilter{Query: "explanation"},
+		)
+		if err != nil {
+			t.Fatalf("search after resync: %v", err)
+		}
+		if len(page.Results) == 0 {
+			t.Error(
+				"FTS search returned no results after resync",
+			)
+		}
+	}
+}
+
+func TestResyncAllPreservesInsights(t *testing.T) {
+	env := setupTestEnv(t)
+
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "Hello").
+		AddClaudeAssistant(tsEarlyS5, "Hi there!").
+		String()
+
+	env.writeClaudeSession(
+		t, "test-proj", "insight-test.jsonl", content,
+	)
+
+	env.engine.SyncAll(nil)
+	assertSessionMessageCount(t, env.db, "insight-test", 2)
+
+	// Insert an insight into the DB.
+	_, err := env.db.InsertInsight(db.Insight{
+		Type:     "daily_activity",
+		DateFrom: "2025-01-15",
+		DateTo:   "2025-01-15",
+		Agent:    "claude",
+		Content:  "test insight survives resync",
+	})
+	if err != nil {
+		t.Fatalf("InsertInsight: %v", err)
+	}
+
+	// ResyncAll should rebuild sessions and preserve
+	// insights.
+	stats := env.engine.ResyncAll(nil)
+	if stats.Synced == 0 {
+		t.Fatal("expected at least 1 synced session")
+	}
+
+	assertSessionMessageCount(t, env.db, "insight-test", 2)
+
+	insights, err := env.db.ListInsights(
+		context.Background(), db.InsightFilter{},
+	)
+	if err != nil {
+		t.Fatalf("ListInsights: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("got %d insights, want 1", len(insights))
+	}
+	if insights[0].Content != "test insight survives resync" {
+		t.Errorf(
+			"insight content = %q, want preserved",
+			insights[0].Content,
+		)
+	}
+}
+
+// TestResyncAllAbortsOnFailures verifies that ResyncAll
+// does not swap the DB when sync has more failures than
+// successes.
+func TestResyncAllAbortsOnFailures(t *testing.T) {
+	env := setupTestEnv(t)
+
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "original content").
+		AddClaudeAssistant(tsEarlyS5, "original reply").
+		String()
+
+	env.writeClaudeSession(
+		t, "test-proj", "abort-test.jsonl", content,
+	)
+
+	env.engine.SyncAll(nil)
+	assertSessionMessageCount(t, env.db, "abort-test", 2)
+
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod(0) does not prevent reads on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root can read mode-0 files")
+	}
+
+	// Make the file unreadable so the parser returns a hard
+	// error. This is deterministic: os.Open will fail with
+	// a permission error on every attempt.
+	sessionPath := filepath.Join(
+		env.claudeDir, "test-proj", "abort-test.jsonl",
+	)
+	if err := os.Chmod(sessionPath, 0); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Chmod(sessionPath, 0o644)
+	})
+
+	stats := env.engine.ResyncAll(nil)
+
+	if stats.Failed == 0 {
+		t.Fatalf("expected failures, got 0")
+	}
+	if stats.TotalSessions == 0 {
+		t.Fatal("expected TotalSessions > 0")
+	}
+
+	hasAbortWarning := false
+	for _, w := range stats.Warnings {
+		if strings.Contains(w, "resync aborted") {
+			hasAbortWarning = true
+		}
+	}
+	if !hasAbortWarning {
+		t.Error("expected 'resync aborted' warning")
+	}
+
+	// Original data should be preserved since swap was
+	// aborted.
+	assertSessionMessageCount(t, env.db, "abort-test", 2)
+	assertMessageContent(
+		t, env.db, "abort-test",
+		"original content", "original reply",
+	)
+}
+
+// TestResyncAllAbortsWithForkAndFailures exercises the abort
+// guard's file-level counting. A fork-producing file yields
+// Synced=2 from filesOK=1. Two unreadable files add Failed=2.
+// The abort guard should fire because Failed(2) > filesOK(1),
+// even though Failed(2) == Synced(2) would pass a naive
+// session-level comparison.
+func TestResyncAllAbortsWithForkAndFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod(0) does not prevent reads on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root can read mode-0 files")
+	}
+
+	env := setupTestEnv(t)
+
+	// File 1: fork-producing session (1 file → 2 sessions).
+	// Main branch has 5 user turns; fork from b creates a
+	// 4-turn gap (>3) which triggers fork detection.
+	forkContent := testjsonl.NewSessionBuilder().
+		AddClaudeUserWithUUID(
+			"2024-01-01T10:00:00Z", "start", "a", "",
+		).
+		AddClaudeAssistantWithUUID(
+			"2024-01-01T10:00:01Z", "ok", "b", "a",
+		).
+		AddClaudeUserWithUUID(
+			"2024-01-01T10:00:02Z", "s2", "c", "b",
+		).
+		AddClaudeAssistantWithUUID(
+			"2024-01-01T10:00:03Z", "ok2", "d", "c",
+		).
+		AddClaudeUserWithUUID(
+			"2024-01-01T10:00:04Z", "s3", "e", "d",
+		).
+		AddClaudeAssistantWithUUID(
+			"2024-01-01T10:00:05Z", "ok3", "f", "e",
+		).
+		AddClaudeUserWithUUID(
+			"2024-01-01T10:00:06Z", "s4", "g", "f",
+		).
+		AddClaudeAssistantWithUUID(
+			"2024-01-01T10:00:07Z", "ok4", "h", "g",
+		).
+		AddClaudeUserWithUUID(
+			"2024-01-01T10:00:08Z", "s5", "k", "h",
+		).
+		AddClaudeAssistantWithUUID(
+			"2024-01-01T10:00:09Z", "ok5", "l", "k",
+		).
+		AddClaudeUserWithUUID(
+			"2024-01-01T10:01:00Z", "fork", "i", "b",
+		).
+		AddClaudeAssistantWithUUID(
+			"2024-01-01T10:01:01Z", "fork-ok", "j", "i",
+		).
+		String()
+
+	env.writeClaudeSession(
+		t, "proj", "forked.jsonl", forkContent,
+	)
+
+	// Files 2 & 3: normal sessions that we'll make unreadable.
+	for _, name := range []string{"bad1.jsonl", "bad2.jsonl"} {
+		c := testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsEarly, "hello").
+			String()
+		env.writeClaudeSession(t, "proj", name, c)
+	}
+
+	// Initial sync: all 3 files parse fine.
+	// Fork file produces 2 sessions: "forked" (10 msgs)
+	// and "forked-i" (2 msgs).
+	env.engine.SyncAll(nil)
+	assertSessionMessageCount(t, env.db, "forked", 10)
+	assertSessionMessageCount(t, env.db, "forked-i", 2)
+
+	// Make both normal files unreadable.
+	for _, name := range []string{"bad1.jsonl", "bad2.jsonl"} {
+		p := filepath.Join(env.claudeDir, "proj", name)
+		if err := os.Chmod(p, 0); err != nil {
+			t.Fatalf("chmod %s: %v", name, err)
+		}
+		t.Cleanup(func() { os.Chmod(p, 0o644) })
+	}
+
+	stats := env.engine.ResyncAll(nil)
+
+	// Expect: filesOK=1, Failed=2, Synced=2.
+	// Abort should fire because Failed(2) > filesOK(1).
+	if stats.Failed != 2 {
+		t.Fatalf("Failed = %d, want 2", stats.Failed)
+	}
+	if stats.Synced != 2 {
+		t.Fatalf("Synced = %d, want 2", stats.Synced)
+	}
+
+	hasAbortWarning := false
+	for _, w := range stats.Warnings {
+		if strings.Contains(w, "resync aborted") {
+			hasAbortWarning = true
+		}
+	}
+	if !hasAbortWarning {
+		t.Error(
+			"expected abort: Failed(2) > filesOK(1) " +
+				"should trigger even though Failed == Synced",
+		)
+	}
+
+	// Original data preserved.
+	assertSessionMessageCount(t, env.db, "forked", 10)
+	assertSessionMessageCount(t, env.db, "forked-i", 2)
+}
+
+// TestResyncAllPostReopenAvailability verifies that reads and
+// writes work through the DB handle after ResyncAll completes
+// the close-rename-reopen cycle.
+func TestResyncAllPostReopenAvailability(t *testing.T) {
+	env := setupTestEnv(t)
+
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "availability check").
+		AddClaudeAssistant(tsEarlyS5, "still here").
+		String()
+
+	env.writeClaudeSession(
+		t, "avail-proj", "avail.jsonl", content,
+	)
+
+	// Initial sync.
+	runSyncAndAssert(t, env.engine, sync.SyncStats{
+		TotalSessions: 1, Synced: 1,
+	})
+
+	// Resync triggers the full close-rename-reopen cycle.
+	stats := env.engine.ResyncAll(nil)
+	if stats.Synced != 1 {
+		t.Fatalf("resync: synced = %d, want 1", stats.Synced)
+	}
+	for _, w := range stats.Warnings {
+		t.Errorf("unexpected warning: %s", w)
+	}
+
+	// Verify reads work on the reopened DB.
+	s, err := env.db.GetSession(
+		context.Background(), "avail",
+	)
+	if err != nil {
+		t.Fatalf("GetSession after resync: %v", err)
+	}
+	if s == nil {
+		t.Fatal("session missing after resync")
+	}
+
+	msgs := fetchMessages(t, env.db, "avail")
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+
+	// Verify writes work on the reopened DB.
+	err = env.db.UpsertSession(db.Session{
+		ID:           "post-resync-write",
+		Project:      "avail-proj",
+		Machine:      "local",
+		Agent:        "claude",
+		MessageCount: 1,
+	})
+	if err != nil {
+		t.Fatalf("UpsertSession after resync: %v", err)
+	}
+	s2, err := env.db.GetSession(
+		context.Background(), "post-resync-write",
+	)
+	if err != nil {
+		t.Fatalf("GetSession post-write: %v", err)
+	}
+	if s2 == nil {
+		t.Fatal("session written after resync not found")
+	}
+
+	// Verify a subsequent SyncAll still works (engine state
+	// is consistent with the reopened DB).
+	stats2 := env.engine.SyncAll(nil)
+	if stats2.Synced != 0 || stats2.Skipped != 1 {
+		t.Errorf(
+			"post-resync SyncAll: synced=%d skipped=%d",
+			stats2.Synced, stats2.Skipped,
+		)
+	}
+}
+
+// TestResyncAllConcurrentReads verifies that concurrent reads
+// through the DB handle don't panic or deadlock while ResyncAll
+// runs the close-rename-reopen cycle.
+func TestResyncAllConcurrentReads(t *testing.T) {
+	env := setupTestEnv(t)
+
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "concurrent engine").
+		AddClaudeAssistant(tsEarlyS5, "response").
+		String()
+
+	env.writeClaudeSession(
+		t, "conc-proj", "conc.jsonl", content,
+	)
+
+	env.engine.SyncAll(nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg gosync.WaitGroup
+
+	// Start readers before resync.
+	readersReady := make(chan struct{})
+	var readyCount gosync.WaitGroup
+	readyCount.Add(4)
+
+	for range 4 {
+		wg.Go(func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				s, _ := env.db.GetSession(ctx, "conc")
+				// Signal ready after first successful read.
+				if s != nil {
+					readyCount.Done()
+					break
+				}
+			}
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				// Ignore errors; the test verifies no
+				// panics/deadlocks and post-resync health.
+				env.db.GetSession(ctx, "conc")
+			}
+		})
+	}
+
+	// Wait for all readers to complete one successful read.
+	go func() {
+		readyCount.Wait()
+		close(readersReady)
+	}()
+	<-readersReady
+
+	// Run resync while readers are active.
+	stats := env.engine.ResyncAll(nil)
+	cancel()
+	wg.Wait()
+
+	if stats.Synced != 1 {
+		t.Fatalf("resync: synced = %d, want 1", stats.Synced)
+	}
+
+	// Post-resync reads must succeed.
+	s, err := env.db.GetSession(
+		context.Background(), "conc",
+	)
+	if err != nil {
+		t.Fatalf("GetSession after resync: %v", err)
+	}
+	if s == nil {
+		t.Fatal("session missing after resync")
+	}
+}
+
+// TestResyncAllAbortsOnEmptyDiscovery verifies that resync does
+// not replace a populated DB with an empty one when discovery
+// returns zero files (e.g. session directories are temporarily
+// inaccessible or misconfigured).
+func TestResyncAllAbortsOnEmptyDiscovery(t *testing.T) {
+	env := setupTestEnv(t)
+
+	// Seed existing data via initial sync.
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "keep me").
+		AddClaudeAssistant(tsEarlyS5, "ok").
+		String()
+	env.writeClaudeSession(t, "proj", "keep.jsonl", content)
+	env.engine.SyncAll(nil)
+	assertSessionMessageCount(t, env.db, "keep", 2)
+
+	// Remove all session files to simulate empty discovery.
+	entries, err := os.ReadDir(
+		filepath.Join(env.claudeDir, "proj"),
+	)
+	if err != nil {
+		t.Fatalf("reading dir: %v", err)
+	}
+	for _, e := range entries {
+		p := filepath.Join(env.claudeDir, "proj", e.Name())
+		os.Remove(p)
+	}
+
+	stats := env.engine.ResyncAll(nil)
+
+	// Swap must be aborted.
+	hasAbortWarning := false
+	for _, w := range stats.Warnings {
+		if strings.Contains(w, "resync aborted") {
+			hasAbortWarning = true
+		}
+	}
+	if !hasAbortWarning {
+		t.Error(
+			"expected abort when discovery returns zero files " +
+				"but old DB has sessions",
+		)
+	}
+
+	// Original data must be preserved.
+	assertSessionMessageCount(t, env.db, "keep", 2)
+}
+
+// TestResyncAllOpenCodeOnly verifies that ResyncAll succeeds
+// when only OpenCode sessions exist (no file-based sessions).
+// The empty-discovery guard must not abort when OpenCode
+// sessions are synced.
+func TestResyncAllOpenCodeOnly(t *testing.T) {
+	env := setupTestEnv(t)
+
+	oc := createOpenCodeDB(t, env.opencodeDir)
+	oc.addProject(t, "proj-1", "/home/user/code/myapp")
+
+	sessionID := "oc-resync-only"
+	var timeCreated int64 = 1704067200000
+	var timeUpdated int64 = 1704067205000
+
+	oc.addSession(
+		t, sessionID, "proj-1",
+		timeCreated, timeUpdated,
+	)
+	oc.addMessage(
+		t, "msg-u1", sessionID, "user", timeCreated,
+	)
+	oc.addMessage(
+		t, "msg-a1", sessionID, "assistant",
+		timeCreated+1,
+	)
+	oc.addTextPart(
+		t, "part-u1", sessionID, "msg-u1",
+		"hello opencode", timeCreated,
+	)
+	oc.addTextPart(
+		t, "part-a1", sessionID, "msg-a1",
+		"hi there", timeCreated+1,
+	)
+
+	// Initial sync populates the DB with OpenCode sessions.
+	env.engine.SyncAll(nil)
+	agentviewID := "opencode:" + sessionID
+	assertSessionMessageCount(t, env.db, agentviewID, 2)
+
+	// ResyncAll must not abort — OpenCode sessions should
+	// survive even though file discovery returns zero.
+	stats := env.engine.ResyncAll(nil)
+
+	for _, w := range stats.Warnings {
+		if strings.Contains(w, "resync aborted") {
+			t.Fatalf(
+				"ResyncAll aborted for OpenCode-only "+
+					"dataset: %s", w,
+			)
+		}
+	}
+	if stats.Synced == 0 {
+		t.Fatal("expected OpenCode sessions to be synced")
+	}
+
+	assertSessionMessageCount(t, env.db, agentviewID, 2)
+	assertMessageContent(
+		t, env.db, agentviewID,
+		"hello opencode", "hi there",
+	)
+}
+
+// TestResyncAllAbortsMixedSourceEmptyFiles verifies that
+// ResyncAll aborts when the old DB has both file-backed and
+// OpenCode sessions but file discovery returns zero (e.g.
+// file dirs temporarily inaccessible). OpenCode sync
+// succeeding must not mask the loss of file-backed sessions.
+func TestResyncAllAbortsMixedSourceEmptyFiles(t *testing.T) {
+	env := setupTestEnv(t)
+
+	// Seed file-backed sessions.
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "file session").
+		AddClaudeAssistant(tsEarlyS5, "file reply").
+		String()
+	env.writeClaudeSession(
+		t, "proj", "mixed-file.jsonl", content,
+	)
+
+	// Seed OpenCode sessions.
+	oc := createOpenCodeDB(t, env.opencodeDir)
+	oc.addProject(t, "proj-1", "/home/user/code/myapp")
+
+	sessionID := "oc-mixed"
+	var timeCreated int64 = 1704067200000
+	var timeUpdated int64 = 1704067205000
+
+	oc.addSession(
+		t, sessionID, "proj-1",
+		timeCreated, timeUpdated,
+	)
+	oc.addMessage(
+		t, "msg-u1", sessionID, "user", timeCreated,
+	)
+	oc.addMessage(
+		t, "msg-a1", sessionID, "assistant",
+		timeCreated+1,
+	)
+	oc.addTextPart(
+		t, "part-u1", sessionID, "msg-u1",
+		"oc question", timeCreated,
+	)
+	oc.addTextPart(
+		t, "part-a1", sessionID, "msg-a1",
+		"oc answer", timeCreated+1,
+	)
+
+	// Initial sync: both sources.
+	env.engine.SyncAll(nil)
+	assertSessionMessageCount(t, env.db, "mixed-file", 2)
+	assertSessionMessageCount(
+		t, env.db, "opencode:"+sessionID, 2,
+	)
+
+	// Remove all file-based sessions to simulate empty
+	// file discovery. OpenCode data remains.
+	entries, err := os.ReadDir(
+		filepath.Join(env.claudeDir, "proj"),
+	)
+	if err != nil {
+		t.Fatalf("reading dir: %v", err)
+	}
+	for _, e := range entries {
+		p := filepath.Join(env.claudeDir, "proj", e.Name())
+		os.Remove(p)
+	}
+
+	stats := env.engine.ResyncAll(nil)
+
+	// Must abort: file-backed sessions would be lost.
+	hasAbortWarning := false
+	for _, w := range stats.Warnings {
+		if strings.Contains(w, "resync aborted") {
+			hasAbortWarning = true
+		}
+	}
+	if !hasAbortWarning {
+		t.Error(
+			"expected abort when file dirs are empty " +
+				"but old DB has file-backed sessions",
+		)
+	}
+
+	// Both file-backed and OpenCode data preserved.
+	assertSessionMessageCount(t, env.db, "mixed-file", 2)
+	assertSessionMessageCount(
+		t, env.db, "opencode:"+sessionID, 2,
+	)
 }

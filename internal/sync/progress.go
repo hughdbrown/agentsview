@@ -30,10 +30,22 @@ type SyncResult struct {
 }
 
 // SyncStats summarizes a full sync run.
+//
+// TotalSessions counts discovered files plus OpenCode sessions.
+// Synced counts sessions (one file can produce multiple via fork
+// detection; OpenCode adds sessions directly). Failed counts
+// files with hard parse/stat errors. filesOK counts files that
+// produced at least one session — used by ResyncAll to compare
+// against Failed on the same unit.
 type SyncStats struct {
-	TotalSessions int `json:"total_sessions"`
-	Synced        int `json:"synced"`
-	Skipped       int `json:"skipped"`
+	TotalSessions int      `json:"total_sessions"`
+	Synced        int      `json:"synced"`
+	Skipped       int      `json:"skipped"`
+	Failed        int      `json:"failed"`
+	Warnings      []string `json:"warnings,omitempty"`
+
+	filesOK         int // unexported: file-level success counter
+	filesDiscovered int // file-based total, excludes OpenCode
 }
 
 // RecordSkip increments the skipped session counter.
@@ -44,6 +56,11 @@ func (s *SyncStats) RecordSkip() {
 // RecordSynced adds n to the synced session counter.
 func (s *SyncStats) RecordSynced(n int) {
 	s.Synced += n
+}
+
+// RecordFailed increments the hard-failure counter.
+func (s *SyncStats) RecordFailed() {
+	s.Failed++
 }
 
 // Percent returns the sync progress as a percentage (0–100).

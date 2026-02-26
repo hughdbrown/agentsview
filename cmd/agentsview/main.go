@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -112,12 +113,25 @@ Data is stored in ~/.agentsview/ by default.
 `, version)
 }
 
-// warnMissingDirs logs a warning for each configured
-// directory that does not exist.
+// warnMissingDirs prints a warning to stderr for each
+// configured directory that does not exist or is
+// inaccessible.
 func warnMissingDirs(dirs []string, label string) {
 	for _, d := range dirs {
-		if _, err := os.Stat(d); err != nil {
-			log.Printf("warning: %s directory not found: %s", label, d)
+		_, err := os.Stat(d)
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr,
+				"warning: %s directory not found: %s\n",
+				label, d,
+			)
+		} else {
+			fmt.Fprintf(os.Stderr,
+				"warning: %s directory inaccessible: %v\n",
+				label, err,
+			)
 		}
 	}
 }
@@ -125,6 +139,7 @@ func warnMissingDirs(dirs []string, label string) {
 func runServe(args []string) {
 	start := time.Now()
 	cfg := mustLoadConfig(args)
+	setupLogFile(cfg.DataDir)
 	database := mustOpenDB(cfg)
 	defer database.Close()
 
@@ -133,6 +148,9 @@ func runServe(args []string) {
 	warnMissingDirs(cfg.ResolveCopilotDirs(), "copilot")
 	warnMissingDirs(cfg.ResolveGeminiDirs(), "gemini")
 	warnMissingDirs(cfg.ResolveOpenCodeDirs(), "opencode")
+
+	// Remove stale temp DB from a prior crashed resync.
+	cleanResyncTemp(cfg.DBPath)
 
 	engine := sync.NewEngine(
 		database,
@@ -181,7 +199,7 @@ func runServe(args []string) {
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
-		log.Fatalf("server error: %v", err)
+		fatal("server error: %v", err)
 	}
 }
 
@@ -208,16 +226,48 @@ func mustLoadConfig(args []string) config.Config {
 	return cfg
 }
 
+// maxLogSize is the threshold at which the debug log file is
+// truncated on startup to prevent unbounded growth.
+const maxLogSize = 10 * 1024 * 1024 // 10 MB
+
+func setupLogFile(dataDir string) {
+	logPath := filepath.Join(dataDir, "debug.log")
+	truncateLogFile(logPath, maxLogSize)
+	f, err := os.OpenFile(
+		logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644,
+	)
+	if err != nil {
+		log.Printf("warning: cannot open log file: %v", err)
+		return
+	}
+	log.SetOutput(f)
+}
+
+// truncateLogFile truncates the log file if it exceeds limit
+// bytes. Symlinks are skipped to avoid truncating unrelated
+// files. Errors are silently ignored since logging is
+// best-effort.
+func truncateLogFile(path string, limit int64) {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return
+	}
+	if info.Size() <= limit {
+		return
+	}
+	_ = os.Truncate(path, 0)
+}
+
 func mustOpenDB(cfg config.Config) *db.DB {
 	database, err := db.Open(cfg.DBPath)
 	if err != nil {
-		log.Fatalf("opening database: %v", err)
+		fatal("opening database: %v", err)
 	}
 
 	if cfg.CursorSecret != "" {
 		secret, err := base64.StdEncoding.DecodeString(cfg.CursorSecret)
 		if err != nil {
-			log.Fatalf("invalid cursor secret: %v", err)
+			fatal("invalid cursor secret: %v", err)
 		}
 		database.SetCursorSecret(secret)
 	}
@@ -225,15 +275,38 @@ func mustOpenDB(cfg config.Config) *db.DB {
 	return database
 }
 
+// fatal prints a formatted error to stderr and exits.
+// Use instead of log.Fatalf after setupLogFile redirects
+// log output to the debug log file.
+func fatal(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "fatal: "+format+"\n", args...)
+	os.Exit(1)
+}
+
+// cleanResyncTemp removes leftover temp database files from
+// a prior crashed resync.
+func cleanResyncTemp(dbPath string) {
+	tempPath := dbPath + "-resync"
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		os.Remove(tempPath + suffix)
+	}
+}
+
 func runInitialSync(engine *sync.Engine) {
 	fmt.Println("Running initial sync...")
 	t := time.Now()
 	stats := engine.SyncAll(printSyncProgress)
-	fmt.Printf(
-		"\nSync complete: %d sessions (%d synced, %d skipped) in %s\n",
-		stats.TotalSessions, stats.Synced, stats.Skipped,
-		time.Since(t).Round(time.Millisecond),
+	summary := fmt.Sprintf(
+		"\nSync complete: %d sessions synced",
+		stats.Synced,
 	)
+	if stats.Failed > 0 {
+		summary += fmt.Sprintf(", %d failed", stats.Failed)
+	}
+	summary += fmt.Sprintf(
+		" in %s\n", time.Since(t).Round(time.Millisecond),
+	)
+	fmt.Print(summary)
 }
 
 func printSyncProgress(p sync.Progress) {
