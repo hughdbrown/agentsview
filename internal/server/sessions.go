@@ -105,3 +105,21 @@ func (s *Server) handleGetSession(
 	}
 	writeJSON(w, http.StatusOK, session)
 }
+
+func (s *Server) handleGetChildSessions(
+	w http.ResponseWriter, r *http.Request,
+) {
+	id := r.PathValue("id")
+	children, err := s.db.GetChildSessions(r.Context(), id)
+	if err != nil {
+		if handleContextError(w, err) {
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if children == nil {
+		children = []db.Session{}
+	}
+	writeJSON(w, http.StatusOK, children)
+}

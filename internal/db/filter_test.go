@@ -235,6 +235,31 @@ func TestSessionFilterExcludeProject(t *testing.T) {
 	}
 }
 
+func TestListSessionsExcludesRelationshipTypes(t *testing.T) {
+	d := testDB(t)
+
+	// Regular session (no relationship_type).
+	insertSession(t, d, "normal", "proj", func(s *Session) {
+		s.MessageCount = 5
+	})
+
+	// Subagent session -- should be excluded.
+	insertSession(t, d, "sub", "proj", func(s *Session) {
+		s.MessageCount = 5
+		s.RelationshipType = "subagent"
+	})
+
+	// Fork session -- should be excluded.
+	insertSession(t, d, "fork1", "proj", func(s *Session) {
+		s.MessageCount = 5
+		s.ParentSessionID = Ptr("normal")
+		s.RelationshipType = "fork"
+	})
+
+	f := filterWith(func(f *SessionFilter) {})
+	requireCount(t, d, f, 1)
+}
+
 func TestActiveSinceUsesEndedAtOverStartedAt(t *testing.T) {
 	d := testDB(t)
 

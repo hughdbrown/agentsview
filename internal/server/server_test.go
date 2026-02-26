@@ -498,6 +498,28 @@ func TestListSessions_ProjectFilter(t *testing.T) {
 	}
 }
 
+func TestListSessions_ExcludeProjectFilter(t *testing.T) {
+	te := setup(t)
+	te.seedSession(t, "s1", "my-app", 5)
+	te.seedSession(t, "s2", "unknown", 3)
+	te.seedSession(t, "s3", "unknown", 7)
+
+	w := te.get(t,
+		"/api/v1/sessions?exclude_project=unknown",
+	)
+	assertStatus(t, w, http.StatusOK)
+
+	resp := decode[sessionListResponse](t, w)
+	if len(resp.Sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d",
+			len(resp.Sessions))
+	}
+	if resp.Sessions[0].ID != "s1" {
+		t.Errorf("expected session s1, got %s",
+			resp.Sessions[0].ID)
+	}
+}
+
 func TestGetSession_Found(t *testing.T) {
 	te := setup(t)
 	te.seedSession(t, "s1", "my-app", 5)
@@ -516,6 +538,58 @@ func TestGetSession_NotFound(t *testing.T) {
 
 	w := te.get(t, "/api/v1/sessions/nonexistent")
 	assertStatus(t, w, http.StatusNotFound)
+}
+
+func TestGetChildSessions_Found(t *testing.T) {
+	te := setup(t)
+	te.seedSession(t, "parent-1", "my-app", 10)
+	te.seedSession(t, "child-a", "my-app", 3, func(s *db.Session) {
+		s.ParentSessionID = dbtest.Ptr("parent-1")
+		s.RelationshipType = "subagent"
+		s.StartedAt = dbtest.Ptr("2025-01-15T10:05:00Z")
+		s.EndedAt = dbtest.Ptr("2025-01-15T10:10:00Z")
+	})
+	te.seedSession(t, "child-b", "my-app", 2, func(s *db.Session) {
+		s.ParentSessionID = dbtest.Ptr("parent-1")
+		s.RelationshipType = "fork"
+		s.StartedAt = dbtest.Ptr("2025-01-15T10:15:00Z")
+		s.EndedAt = dbtest.Ptr("2025-01-15T10:20:00Z")
+	})
+
+	w := te.get(t, "/api/v1/sessions/parent-1/children")
+	assertStatus(t, w, http.StatusOK)
+
+	var children []db.Session
+	if err := json.Unmarshal(w.Body.Bytes(), &children); err != nil {
+		t.Fatalf("decoding JSON: %v", err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("expected 2 children, got %d", len(children))
+	}
+	if children[0].ID != "child-a" {
+		t.Errorf("children[0].ID = %q, want %q",
+			children[0].ID, "child-a")
+	}
+	if children[1].ID != "child-b" {
+		t.Errorf("children[1].ID = %q, want %q",
+			children[1].ID, "child-b")
+	}
+}
+
+func TestGetChildSessions_Empty(t *testing.T) {
+	te := setup(t)
+	te.seedSession(t, "no-kids", "my-app", 5)
+
+	w := te.get(t, "/api/v1/sessions/no-kids/children")
+	assertStatus(t, w, http.StatusOK)
+
+	var children []db.Session
+	if err := json.Unmarshal(w.Body.Bytes(), &children); err != nil {
+		t.Fatalf("decoding JSON: %v", err)
+	}
+	if len(children) != 0 {
+		t.Fatalf("expected 0 children, got %d", len(children))
+	}
 }
 
 func TestGetMessages_AscDefault(t *testing.T) {
@@ -1157,6 +1231,40 @@ func TestUploadSession(t *testing.T) {
 	}
 	if sess.Project != "myproj" {
 		t.Errorf("stored project = %q", sess.Project)
+	}
+}
+
+func TestUploadSession_InfersRelationshipType(t *testing.T) {
+	te := setup(t)
+
+	// Build a session whose first entry has a different sessionId,
+	// making it a child session. The filename starts with "agent-"
+	// so it should be inferred as a subagent.
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUserWithSessionID(
+			tsEarly, "Run task", "parent-session",
+		).
+		AddClaudeAssistant(tsEarlyS5, "Done.").
+		String()
+
+	w := te.upload(t, "agent-task42.jsonl", content,
+		"project=myproj&machine=remote")
+	assertStatus(t, w, http.StatusOK)
+
+	sess, err := te.db.GetSession(
+		context.Background(), "agent-task42",
+	)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("session not found in DB")
+	}
+	if sess.RelationshipType != "subagent" {
+		t.Errorf(
+			"RelationshipType = %q, want %q",
+			sess.RelationshipType, "subagent",
+		)
 	}
 }
 
