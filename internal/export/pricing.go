@@ -312,12 +312,38 @@ func (r *PricingResolver) Resolve(
 // model, then the timestamp-aware GenAI Prices document, then the existing
 // LiteLLM/OpenRouter rows. An exact custom rate for the reported model still
 // takes precedence over caller-supplied canonicalization.
+//
+// When that whole ladder finds nothing and the model carries an Ollama Cloud
+// tag ("kimi-k2.7-code:cloud", "gpt-oss:120b-cloud"), the ladder runs once
+// more on the untagged name. Ollama bills its cloud models per token at the
+// upstream model's own rate, so the untagged catalog row is the estimate.
+// This runs only after every exact, custom, historical, and canonical attempt
+// on the tagged name has failed, so a catalogued cloud row (LiteLLM's
+// ollama/gpt-oss:120b-cloud) or a custom rate for the tagged name is never
+// reduced. The tagged name stays the priced model; Pattern reports the row.
 func (r *PricingResolver) ResolveAt(
 	reportedModel, canonicalModel string, timestamp time.Time,
 ) (string, PricingLookup) {
 	if r == nil {
 		return reportedModel, PricingLookup{}
 	}
+	pricedModel, lookup := r.resolveAt(reportedModel, canonicalModel, timestamp)
+	if lookup.OK {
+		return pricedModel, lookup
+	}
+	base := pricingpkg.OllamaCloudBaseModel(pricedModel)
+	if base == pricedModel {
+		return pricedModel, lookup
+	}
+	if _, baseLookup := r.resolveAt(base, base, timestamp); baseLookup.OK {
+		return pricedModel, baseLookup
+	}
+	return pricedModel, lookup
+}
+
+func (r *PricingResolver) resolveAt(
+	reportedModel, canonicalModel string, timestamp time.Time,
+) (string, PricingLookup) {
 	if rates, ok := r.byModel[reportedModel]; ok &&
 		rates.Source == PricingRowSourceCustom {
 		return reportedModel, PricingLookup{
