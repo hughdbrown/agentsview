@@ -351,8 +351,8 @@ func (r *PricingResolver) ResolveAt(
 // "ollama/gpt-oss:120b-cloud" with all-zero rates because Ollama Cloud
 // passes through the upstream model price; those rows should not block the
 // fallback to the real upstream rate for the untagged base model name.
-// Explicit custom zero rates and GenAI Prices rows are never treated as
-// placeholders.
+// Explicit custom zero rates are never treated as placeholders, and neither
+// is a row whose flat rates are zero but which prices usage through bands.
 func isPlaceholderOllamaCloudRate(lookup PricingLookup) bool {
 	if !lookup.OK || lookup.Rates.Source == PricingRowSourceCustom {
 		return false
@@ -360,7 +360,8 @@ func isPlaceholderOllamaCloudRate(lookup PricingLookup) bool {
 	if pricingpkg.OllamaCloudBaseModel(lookup.Pattern) == lookup.Pattern {
 		return false
 	}
-	return lookup.Rates.InputPerMTok.Microdollars == 0 &&
+	return len(lookup.Rates.Bands) == 0 &&
+		lookup.Rates.InputPerMTok.Microdollars == 0 &&
 		lookup.Rates.OutputPerMTok.Microdollars == 0 &&
 		lookup.Rates.CacheWritePerMTok.Microdollars == 0 &&
 		lookup.Rates.CacheWrite1hPerMTok.Microdollars == 0 &&
