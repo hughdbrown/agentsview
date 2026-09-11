@@ -325,7 +325,8 @@ func (r *PricingResolver) Resolve(
 // An exception is a zero-rate Ollama Cloud catalog row (LiteLLM's real
 // ollama/gpt-oss:120b-cloud entry), which is treated as non-authoritative so
 // the upstream untagged rate is used instead. Explicit nonzero cloud rates
-// and custom rates still take precedence.
+// and custom rates still take precedence. If no untagged base row exists,
+// the placeholder is discarded and the lookup reports OK=false.
 func (r *PricingResolver) ResolveAt(
 	reportedModel, canonicalModel string, timestamp time.Time,
 ) (string, PricingLookup) {
@@ -335,6 +336,11 @@ func (r *PricingResolver) ResolveAt(
 	pricedModel, lookup := r.resolveAt(reportedModel, canonicalModel, timestamp)
 	if lookup.OK && !isPlaceholderOllamaCloudRate(lookup) {
 		return pricedModel, lookup
+	}
+	if isPlaceholderOllamaCloudRate(lookup) {
+		// A placeholder must never count as priced; only a real base row
+		// can replace it.
+		lookup = PricingLookup{}
 	}
 	base := pricingpkg.OllamaCloudBaseModel(pricedModel)
 	if base == pricedModel {

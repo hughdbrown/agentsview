@@ -1160,6 +1160,25 @@ func TestPricingResolverIgnoresZeroRateOllamaCloudRowAndFallsBackToBase(t *testi
 	assert.Equal(t, money.MustParseDollars("15"), lookup.Rates.OutputPerMTok)
 }
 
+// When the only match is a zero-rate Ollama Cloud placeholder and no untagged
+// base row exists, the usage must stay unpriced rather than count as
+// successfully priced at zero.
+func TestPricingResolverLeavesZeroRateOllamaCloudRowUnresolvedWithoutBase(t *testing.T) {
+	flat := []EffectivePricingRow{
+		{
+			ModelPattern: "ollama/gpt-oss:120b-cloud",
+			Rates:        ModelRates{Source: PricingRowSourceFetched},
+		},
+	}
+	resolver := NewPricingResolver(flat)
+
+	pricedModel, lookup := resolver.Resolve("gpt-oss:120b-cloud", "gpt-oss:120b-cloud")
+
+	assert.Equal(t, "gpt-oss:120b-cloud", pricedModel)
+	assert.False(t, lookup.OK)
+	assert.Empty(t, lookup.Pattern)
+}
+
 // A user may deliberately price an Ollama Cloud tag at zero, for example to
 // model a free allowance. That explicit custom zero rate must win over the
 // nonzero base row instead of being mistaken for a LiteLLM placeholder.
