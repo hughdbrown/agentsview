@@ -321,6 +321,11 @@ func (r *PricingResolver) Resolve(
 // on the tagged name has failed, so a catalogued cloud row (LiteLLM's
 // ollama/gpt-oss:120b-cloud) or a custom rate for the tagged name is never
 // reduced. The tagged name stays the priced model; Pattern reports the row.
+//
+// An exception is a zero-rate Ollama Cloud catalog row (LiteLLM's real
+// ollama/gpt-oss:120b-cloud entry), which is treated as non-authoritative so
+// the upstream untagged rate is used instead. Explicit nonzero cloud rates
+// and custom rates still take precedence.
 func (r *PricingResolver) ResolveAt(
 	reportedModel, canonicalModel string, timestamp time.Time,
 ) (string, PricingLookup) {
@@ -328,7 +333,7 @@ func (r *PricingResolver) ResolveAt(
 		return reportedModel, PricingLookup{}
 	}
 	pricedModel, lookup := r.resolveAt(reportedModel, canonicalModel, timestamp)
-	if lookup.OK {
+	if lookup.OK && !isPlaceholderOllamaCloudRate(lookup) {
 		return pricedModel, lookup
 	}
 	base := pricingpkg.OllamaCloudBaseModel(pricedModel)
@@ -339,6 +344,27 @@ func (r *PricingResolver) ResolveAt(
 		return pricedModel, baseLookup
 	}
 	return pricedModel, lookup
+}
+
+// isPlaceholderOllamaCloudRate reports whether a lookup found only a zero-rate
+// Ollama Cloud row. LiteLLM publishes rows such as
+// "ollama/gpt-oss:120b-cloud" with all-zero rates because Ollama Cloud
+// passes through the upstream model price; those rows should not block the
+// fallback to the real upstream rate for the untagged base model name.
+// Explicit custom zero rates and GenAI Prices rows are never treated as
+// placeholders.
+func isPlaceholderOllamaCloudRate(lookup PricingLookup) bool {
+	if !lookup.OK || lookup.Rates.Source == PricingRowSourceCustom {
+		return false
+	}
+	if pricingpkg.OllamaCloudBaseModel(lookup.Pattern) == lookup.Pattern {
+		return false
+	}
+	return lookup.Rates.InputPerMTok.Microdollars == 0 &&
+		lookup.Rates.OutputPerMTok.Microdollars == 0 &&
+		lookup.Rates.CacheWritePerMTok.Microdollars == 0 &&
+		lookup.Rates.CacheWrite1hPerMTok.Microdollars == 0 &&
+		lookup.Rates.CacheReadPerMTok.Microdollars == 0
 }
 
 func (r *PricingResolver) resolveAt(

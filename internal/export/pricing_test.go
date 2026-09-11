@@ -1007,9 +1007,12 @@ func TestPricingResolverPricesOllamaCloudTagAtBaseModelRate(t *testing.T) {
 			},
 		},
 		{
-			// A catalogued Ollama cloud row keeps its own rate.
+			// A nonzero catalogued Ollama cloud row keeps its own rate.
 			ModelPattern: "ollama/gpt-oss:120b-cloud",
-			Rates:        ModelRates{Source: PricingRowSourceFetched},
+			Rates: ModelRates{
+				InputPerMTok: money.MustParseDollars("2"),
+				Source:       PricingRowSourceFetched,
+			},
 		},
 		{
 			ModelPattern: "qwen3.8",
@@ -1036,11 +1039,11 @@ func TestPricingResolverPricesOllamaCloudTagAtBaseModelRate(t *testing.T) {
 			wantInput:   money.MustParseDollars("0.95"),
 		},
 		{
-			name:        "catalogued cloud row matches before stripping",
+			name:        "nonzero catalogued cloud row matches before stripping",
 			model:       "gpt-oss:120b-cloud",
 			wantOK:      true,
 			wantPattern: "ollama/gpt-oss:120b-cloud",
-			wantInput:   money.Money{},
+			wantInput:   money.MustParseDollars("2"),
 		},
 		{
 			name:   "local size tag is not reduced to a hosted rate",
@@ -1124,6 +1127,37 @@ func TestPricingResolverUsesGenAIBaseForOllamaCloudTag(t *testing.T) {
 	assert.Equal(t, "genai-only/only-model", lookup.Pattern)
 	assert.Equal(t, money.MustParseDollars("2"), lookup.Rates.InputPerMTok)
 	assert.Equal(t, money.MustParseDollars("8"), lookup.Rates.OutputPerMTok)
+}
+
+// LiteLLM publishes ollama/gpt-oss:120b-cloud with all-zero rates because
+// Ollama Cloud simply bills the upstream model price. The resolver should
+// treat that zero-rate cloud row as a placeholder and fall back to the real
+// gpt-oss:120b rate.
+func TestPricingResolverIgnoresZeroRateOllamaCloudRowAndFallsBackToBase(t *testing.T) {
+	flat := []EffectivePricingRow{
+		{
+			ModelPattern: "gpt-oss:120b",
+			Rates: ModelRates{
+				InputPerMTok:  money.MustParseDollars("5"),
+				OutputPerMTok: money.MustParseDollars("15"),
+				Source:        PricingRowSourceFetched,
+			},
+		},
+		{
+			// Real LiteLLM placeholder row: all-zero Ollama Cloud rate.
+			ModelPattern: "ollama/gpt-oss:120b-cloud",
+			Rates:        ModelRates{Source: PricingRowSourceFetched},
+		},
+	}
+	resolver := NewPricingResolver(flat)
+
+	pricedModel, lookup := resolver.Resolve("gpt-oss:120b-cloud", "gpt-oss:120b-cloud")
+
+	assert.Equal(t, "gpt-oss:120b-cloud", pricedModel)
+	require.True(t, lookup.OK)
+	assert.Equal(t, "gpt-oss:120b", lookup.Pattern)
+	assert.Equal(t, money.MustParseDollars("5"), lookup.Rates.InputPerMTok)
+	assert.Equal(t, money.MustParseDollars("15"), lookup.Rates.OutputPerMTok)
 }
 
 // OpenCode records the Ollama model tag verbatim, so a Kimi K2.7 Code turn
